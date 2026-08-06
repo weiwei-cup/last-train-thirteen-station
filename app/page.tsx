@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Phase = "title" | "contract" | "briefing" | "inspection" | "result" | "shift-end" | "ending";
 type InvestigationKey = "ticket" | "mirror" | "question" | "pulse" | "bag";
+type TacticKey = "field-kit" | "night-pass" | "reserve-note" | "red-stamp" | "cold-lamp";
+type DeckCardKey = InvestigationKey | TacticKey;
 type Tone = "safe" | "warning" | "strange";
 
 type Finding = {
@@ -50,6 +52,8 @@ type VerdictResult = {
   directiveMet: boolean;
   directiveReward: number;
   storyAdvanced: boolean;
+  tacticReward: number;
+  eliteBonus: number;
   endCause?: "trust" | "contamination";
 };
 
@@ -75,7 +79,14 @@ type Upgrade = {
   name: string;
   kicker: string;
   description: string;
-  deckCard: InvestigationKey;
+  deckCard: DeckCardKey;
+};
+
+type TacticCard = {
+  mark: string;
+  name: string;
+  hint: string;
+  effect: "focus" | "free-action" | "retain" | "verdict-bonus" | "high-cost-clue";
 };
 
 type RouteIncident = {
@@ -145,15 +156,23 @@ const ACTIONS: Record<InvestigationKey, { mark: string; name: string; cost: numb
   bag: { mark: "▰", name: "检查行李", cost: 2, hint: "查看随身物品" },
 };
 
-const STARTER_ACTION_DECK: InvestigationKey[] = ["ticket", "ticket", "mirror", "mirror", "question", "question", "pulse", "pulse", "bag", "bag"];
+const TACTICS: Record<TacticKey, TacticCard> = {
+  "field-kit": { mark: "＋", name: "应急器材箱", hint: "立即恢复 1 点专注", effect: "focus" },
+  "night-pass": { mark: "零", name: "夜行通行证", hint: "下一次基础调查不消耗专注", effect: "free-action" },
+  "reserve-note": { mark: "留", name: "留档便笺", hint: "为下一位乘客保留至多两张未用牌", effect: "retain" },
+  "red-stamp": { mark: "奖", name: "红色复核章", hint: "本次正确处置额外获得 6 津贴", effect: "verdict-bonus" },
+  "cold-lamp": { mark: "灯", name: "冷光检查灯", hint: "免费取得一条高成本调查记录", effect: "high-cost-clue" },
+};
+
+const STARTER_ACTION_DECK: DeckCardKey[] = ["ticket", "ticket", "mirror", "mirror", "question", "question", "pulse", "pulse", "bag", "bag"];
 
 const UPGRADES: Upgrade[] = [
-  { id: "silver-mirror", mark: "◑", name: "银背小镜", kicker: "器材牌", description: "每位乘客的「照见倒影」不再消耗专注。", deckCard: "mirror" },
+  { id: "silver-mirror", mark: "◑", name: "银背小镜", kicker: "器材牌", description: "每位乘客的「照见倒影」不再消耗专注。", deckCard: "cold-lamp" },
   { id: "double-punch", mark: "✦", name: "双孔票钳", kicker: "器材牌", description: "核验车票时，同时获得简短问询的结果。", deckCard: "ticket" },
-  { id: "night-tea", mark: "♨", name: "浓酽夜茶", kicker: "补给牌", description: "每位乘客可用专注从 3 点提高至 4 点。", deckCard: "question" },
-  { id: "red-thread", mark: "∞", name: "乘警红绳", kicker: "护身牌", description: "信誉上限与当前信誉各提高 1 点。", deckCard: "pulse" },
-  { id: "old-ledger", mark: "冊", name: "旧站名册", kicker: "档案牌", description: "每次正确判断额外获得 5 元夜班津贴。", deckCard: "bag" },
-  { id: "brass-whistle", mark: "！", name: "黄铜警哨", kicker: "应急牌", description: "第一次放行异常乘客时，不增加车厢污染。", deckCard: "question" },
+  { id: "night-tea", mark: "♨", name: "浓酽夜茶", kicker: "补给牌", description: "每位乘客可用专注从 3 点提高至 4 点。", deckCard: "field-kit" },
+  { id: "red-thread", mark: "∞", name: "乘警红绳", kicker: "护身牌", description: "信誉上限与当前信誉各提高 1 点。", deckCard: "night-pass" },
+  { id: "old-ledger", mark: "冊", name: "旧站名册", kicker: "档案牌", description: "每次正确判断额外获得 5 元夜班津贴。", deckCard: "reserve-note" },
+  { id: "brass-whistle", mark: "！", name: "黄铜警哨", kicker: "应急牌", description: "第一次放行异常乘客时，不增加车厢污染。", deckCard: "red-stamp" },
 ];
 
 const CONTRACTS: DutyContract[] = [
@@ -558,21 +577,37 @@ function createRunStoryLinks(rosters: Passenger[][]): StoryLink[] {
   }));
 }
 
-function dealActionHand(deck: InvestigationKey[], revealed: InvestigationKey[] = []): InvestigationKey[] {
-  const drawUnique = (source: InvestigationKey[], target: InvestigationKey[]) => {
-    const pool = [...source];
-    while (pool.length > 0 && target.length < 4) {
-      const picked = pool[Math.floor(Math.random() * pool.length)];
-      if (!target.includes(picked)) target.push(picked);
-      for (let index = pool.length - 1; index >= 0; index -= 1) {
-        if (pool[index] === picked) pool.splice(index, 1);
-      }
+function isInvestigationKey(key: DeckCardKey): key is InvestigationKey {
+  return Object.prototype.hasOwnProperty.call(ACTIONS, key);
+}
+
+function getDeckCardInfo(key: DeckCardKey) {
+  return isInvestigationKey(key) ? { ...ACTIONS[key], type: "调查牌" } : { ...TACTICS[key], cost: 0, type: "策略牌" };
+}
+
+type DrawResult = { hand: DeckCardKey[]; drawPile: DeckCardKey[]; discardPile: DeckCardKey[] };
+
+function drawDeckHand(drawSource: DeckCardKey[], discardSource: DeckCardKey[], carry: DeckCardKey[] = [], blocked: DeckCardKey[] = []): DrawResult {
+  let drawPile = [...drawSource];
+  let discardPile = [...discardSource];
+  const hand = [...carry].slice(0, 4);
+  const blockedSet = new Set(blocked);
+  const totalCards = drawPile.length + discardPile.length;
+  let attempts = 0;
+
+  while (hand.length < 4 && totalCards > 0 && attempts < totalCards * 3 + 12) {
+    if (drawPile.length === 0) {
+      drawPile = shuffle(discardPile);
+      discardPile = [];
     }
-  };
-  const hand: InvestigationKey[] = [];
-  drawUnique(deck.filter((key) => !revealed.includes(key)), hand);
-  if (hand.length < 4) drawUnique(deck, hand);
-  return hand;
+    const card = drawPile.shift();
+    if (!card) break;
+    if (blockedSet.has(card) || hand.includes(card)) discardPile.push(card);
+    else hand.push(card);
+    attempts += 1;
+  }
+
+  return { hand, drawPile, discardPile };
 }
 
 function createUpgradeOffers(): UpgradeId[][] {
@@ -652,9 +687,17 @@ export default function Home() {
   const [streak, setStreak] = useState(0);
   const [runBestStreak, setRunBestStreak] = useState(0);
   const [revealed, setRevealed] = useState<InvestigationKey[]>([]);
-  const [actionDeck, setActionDeck] = useState<InvestigationKey[]>(STARTER_ACTION_DECK);
-  const [hand, setHand] = useState<InvestigationKey[]>(STARTER_ACTION_DECK.slice(0, 4));
+  const [actionDeck, setActionDeck] = useState<DeckCardKey[]>(STARTER_ACTION_DECK);
+  const [drawPile, setDrawPile] = useState<DeckCardKey[]>([]);
+  const [discardPile, setDiscardPile] = useState<DeckCardKey[]>([]);
+  const [hand, setHand] = useState<DeckCardKey[]>([]);
   const [redrawUsed, setRedrawUsed] = useState(false);
+  const [usedTactics, setUsedTactics] = useState<TacticKey[]>([]);
+  const [freeActionReady, setFreeActionReady] = useState(false);
+  const [retainNextHand, setRetainNextHand] = useState(false);
+  const [verdictBonusReady, setVerdictBonusReady] = useState(false);
+  const [tacticsPlayed, setTacticsPlayed] = useState(0);
+  const [eliteCleared, setEliteCleared] = useState(0);
   const [verdictHistory, setVerdictHistory] = useState<Record<string, VerdictDecision>>({});
   const [supportAvailable, setSupportAvailable] = useState(true);
   const [result, setResult] = useState<VerdictResult | null>(null);
@@ -667,10 +710,15 @@ export default function Home() {
   const [soundOn, setSoundOn] = useState(true);
   const [showGuide, setShowGuide] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
+  const [showDeck, setShowDeck] = useState(false);
   const revealedRef = useRef<InvestigationKey[]>([]);
   const focusRef = useRef(3);
   const supportAvailableRef = useRef(true);
   const redrawUsedRef = useRef(false);
+  const usedTacticsRef = useRef<TacticKey[]>([]);
+  const freeActionReadyRef = useRef(false);
+  const retainNextHandRef = useRef(false);
+  const verdictBonusReadyRef = useRef(false);
   const verdictLockedRef = useRef(false);
 
   const night = NIGHTS[nightIndex];
@@ -685,12 +733,15 @@ export default function Home() {
   const storyTarget = activePassengers.find((item) => item.id === storyLink.targetId) ?? activePassengers[activePassengers.length - 1];
   const storyDecision = passenger.id === storyLink.targetId ? verdictHistory[storyLink.triggerId] : undefined;
   const storyFinding = storyDecision ? getStoryFinding(storyLink, storyTrigger, storyTarget, storyDecision) : null;
+  const isElite = passengerIndex === activePassengers.length - 1;
+  const eliteReady = !isElite || revealed.length >= 2;
   const crossCheckUnlocked = protocol.actions.every((key) => revealed.includes(key));
   const crossCheckFinding = getCrossCheckFinding(protocol, passenger);
   const maxFocus = contract.focus + (upgrades.includes("night-tea") ? 1 : 0) + (incident.focusDelta ?? 0);
   const maxTrust = contract.trust + (upgrades.includes("red-thread") ? 1 : 0);
   const rawScore = Math.max(0, credits + caught * 20 + trust * 10 - contamination * 15 - mistakes * 5);
   const score = Math.floor(rawScore * contract.multiplier);
+  const deckCounts = useMemo(() => actionDeck.reduce<Record<DeckCardKey, number>>((counts, key) => ({ ...counts, [key]: (counts[key] ?? 0) + 1 }), {} as Record<DeckCardKey, number>), [actionDeck]);
 
   useEffect(() => {
     try {
@@ -734,10 +785,11 @@ export default function Home() {
   }, [nightIndex, upgradeOffers, upgrades]);
 
   const actionCost = useCallback((key: InvestigationKey) => {
+    if (freeActionReady) return 0;
     if (key === "mirror" && upgrades.includes("silver-mirror")) return 0;
     const incidentDelta = incident.action === key ? incident.costDelta ?? 0 : 0;
     return Math.max(0, ACTIONS[key].cost + incidentDelta);
-  }, [incident, upgrades]);
+  }, [freeActionReady, incident, upgrades]);
 
   const startRun = () => {
     playTone("tap", soundOn);
@@ -767,12 +819,24 @@ export default function Home() {
     setMistakes(0);
     setStreak(0);
     setRunBestStreak(0);
+    setTacticsPlayed(0);
+    setEliteCleared(0);
     setRevealed([]);
     revealedRef.current = [];
     setActionDeck(STARTER_ACTION_DECK);
-    setHand(dealActionHand(STARTER_ACTION_DECK));
+    setDrawPile(shuffle(STARTER_ACTION_DECK));
+    setDiscardPile([]);
+    setHand([]);
     setRedrawUsed(false);
     redrawUsedRef.current = false;
+    setUsedTactics([]);
+    usedTacticsRef.current = [];
+    setFreeActionReady(false);
+    freeActionReadyRef.current = false;
+    setRetainNextHand(false);
+    retainNextHandRef.current = false;
+    setVerdictBonusReady(false);
+    verdictBonusReadyRef.current = false;
     setVerdictHistory({});
     setSupportAvailable(true);
     supportAvailableRef.current = true;
@@ -785,14 +849,25 @@ export default function Home() {
 
   const beginNight = () => {
     playTone("tap", soundOn);
+    const dealt = drawDeckHand(drawPile, discardPile);
     setPassengerIndex(0);
     setFocus(maxFocus);
     focusRef.current = maxFocus;
     setRevealed([]);
     revealedRef.current = [];
-    setHand(dealActionHand(actionDeck));
+    setDrawPile(dealt.drawPile);
+    setDiscardPile(dealt.discardPile);
+    setHand(dealt.hand);
     setRedrawUsed(false);
     redrawUsedRef.current = false;
+    setUsedTactics([]);
+    usedTacticsRef.current = [];
+    setFreeActionReady(false);
+    freeActionReadyRef.current = false;
+    setRetainNextHand(false);
+    retainNextHandRef.current = false;
+    setVerdictBonusReady(false);
+    verdictBonusReadyRef.current = false;
     setSupportAvailable(true);
     supportAvailableRef.current = true;
     verdictLockedRef.current = false;
@@ -800,18 +875,56 @@ export default function Home() {
     setPhase("inspection");
   };
 
-  const investigate = useCallback((key: InvestigationKey) => {
-    if (phase !== "inspection" || !hand.includes(key) || revealedRef.current.includes(key)) return;
-    const cost = actionCost(key);
-    if (focusRef.current < cost) return;
-    playTone("tap", soundOn);
-    focusRef.current -= cost;
+  const revealAction = useCallback((key: InvestigationKey) => {
+    if (revealedRef.current.includes(key)) return;
     const next = [...revealedRef.current, key];
     if (key === "ticket" && upgrades.includes("double-punch") && !next.includes("question")) next.push("question");
     revealedRef.current = next;
-    setFocus(focusRef.current);
     setRevealed(next);
-  }, [actionCost, hand, phase, soundOn, upgrades]);
+  }, [upgrades]);
+
+  const investigate = useCallback((key: InvestigationKey) => {
+    if (phase !== "inspection" || !hand.includes(key) || revealedRef.current.includes(key)) return;
+    const cost = freeActionReadyRef.current ? 0 : actionCost(key);
+    if (focusRef.current < cost) return;
+    playTone("tap", soundOn);
+    focusRef.current -= cost;
+    if (freeActionReadyRef.current) {
+      freeActionReadyRef.current = false;
+      setFreeActionReady(false);
+    }
+    setFocus(focusRef.current);
+    revealAction(key);
+  }, [actionCost, hand, phase, revealAction, soundOn]);
+
+  const playTactic = useCallback((key: TacticKey) => {
+    if (phase !== "inspection" || !hand.includes(key) || usedTacticsRef.current.includes(key)) return;
+    const tactic = TACTICS[key];
+    if (tactic.effect === "focus" && focusRef.current >= maxFocus) return;
+    if (tactic.effect === "high-cost-clue" && ["pulse", "bag", "mirror"].every((item) => revealedRef.current.includes(item as InvestigationKey))) return;
+    usedTacticsRef.current = [...usedTacticsRef.current, key];
+    setUsedTactics(usedTacticsRef.current);
+    setTacticsPlayed((value) => value + 1);
+
+    if (tactic.effect === "focus") {
+      focusRef.current = Math.min(maxFocus, focusRef.current + 1);
+      setFocus(focusRef.current);
+    } else if (tactic.effect === "free-action") {
+      freeActionReadyRef.current = true;
+      setFreeActionReady(true);
+    } else if (tactic.effect === "retain") {
+      retainNextHandRef.current = true;
+      setRetainNextHand(true);
+    } else if (tactic.effect === "verdict-bonus") {
+      verdictBonusReadyRef.current = true;
+      setVerdictBonusReady(true);
+    } else {
+      const priority: InvestigationKey[] = ["pulse", "bag", "mirror"];
+      const target = priority.find((item) => !revealedRef.current.includes(item));
+      if (target) revealAction(target);
+    }
+    playTone("good", soundOn);
+  }, [hand, maxFocus, phase, revealAction, soundOn]);
 
   const redrawHand = useCallback(() => {
     if (phase !== "inspection" || redrawUsedRef.current || focusRef.current < 1) return;
@@ -819,9 +932,13 @@ export default function Home() {
     focusRef.current -= 1;
     setFocus(focusRef.current);
     setRedrawUsed(true);
-    setHand(dealActionHand(actionDeck, revealedRef.current));
+    const blocked: DeckCardKey[] = [...revealedRef.current, ...usedTacticsRef.current];
+    const dealt = drawDeckHand(drawPile, [...discardPile, ...hand], [], blocked);
+    setDrawPile(dealt.drawPile);
+    setDiscardPile(dealt.discardPile);
+    setHand(dealt.hand);
     playTone("tap", soundOn);
-  }, [actionDeck, phase, soundOn]);
+  }, [discardPile, drawPile, hand, phase, soundOn]);
 
   const callSupport = useCallback(() => {
     if (phase !== "inspection" || !supportAvailableRef.current) return;
@@ -831,20 +948,19 @@ export default function Home() {
     if (!target) return;
     supportAvailableRef.current = false;
     setSupportAvailable(false);
-    const next = [...revealedRef.current, target];
-    if (target === "ticket" && upgrades.includes("double-punch") && !next.includes("question")) next.push("question");
-    revealedRef.current = next;
-    setRevealed(next);
+    revealAction(target);
     playTone("good", soundOn);
-  }, [phase, protocol.actions, soundOn, upgrades]);
+  }, [phase, protocol.actions, revealAction, soundOn]);
 
   const makeVerdict = useCallback((decision: "allow" | "deny") => {
-    if (phase !== "inspection" || verdictLockedRef.current) return;
+    if (phase !== "inspection" || verdictLockedRef.current || (isElite && revealedRef.current.length < 2)) return;
     verdictLockedRef.current = true;
     const correct = (decision === "deny") === passenger.isAnomaly;
     const didCrossCheck = protocol.actions.every((key) => revealedRef.current.includes(key));
     const directiveMet = correct && directiveSatisfied(directive, revealedRef.current, focusRef.current, didCrossCheck);
     const directiveReward = directiveMet ? directive.reward : 0;
+    const tacticReward = correct && verdictBonusReadyRef.current ? 6 : 0;
+    const eliteBonus = correct && isElite ? 8 : 0;
     let nextTrust = trust;
     let nextContamination = contamination;
     let reward = 0;
@@ -853,10 +969,11 @@ export default function Home() {
     if (correct) {
       nextStreak = streak + 1;
       setRunBestStreak((value) => Math.max(value, nextStreak));
-      reward = 12 + Math.min(nextStreak - 1, 4) * 3 + (upgrades.includes("old-ledger") ? 5 : 0) + (incident.rewardDelta ?? 0) + directiveReward;
+      reward = 12 + Math.min(nextStreak - 1, 4) * 3 + (upgrades.includes("old-ledger") ? 5 : 0) + (incident.rewardDelta ?? 0) + directiveReward + tacticReward + eliteBonus;
       setStreak(nextStreak);
       setCredits((value) => value + reward);
       if (passenger.isAnomaly) setCaught((value) => value + 1);
+      if (isElite) setEliteCleared((value) => value + 1);
       playTone("good", soundOn);
     } else {
       setStreak(0);
@@ -889,9 +1006,9 @@ export default function Home() {
     if (storyAdvanced) setVerdictHistory((history) => ({ ...history, [passenger.id]: decision }));
 
     setArchiveIds((items) => items.includes(passenger.id) ? items : [...items, passenger.id]);
-    setResult({ correct, decision, passenger, title, explanation, reward, streak: nextStreak, directiveMet, directiveReward, storyAdvanced, endCause });
+    setResult({ correct, decision, passenger, title, explanation, reward, streak: nextStreak, directiveMet, directiveReward, storyAdvanced, tacticReward, eliteBonus, endCause });
     setPhase("result");
-  }, [contamination, directive, incident, passenger, phase, protocol.actions, soundOn, storyLink.triggerId, streak, trust, upgrades, whistleUsed]);
+  }, [contamination, directive, incident, isElite, passenger, phase, protocol.actions, soundOn, storyLink.triggerId, streak, trust, upgrades, whistleUsed]);
 
   const continueAfterResult = () => {
     playTone("tap", soundOn);
@@ -906,14 +1023,28 @@ export default function Home() {
       else setPhase("shift-end");
       return;
     }
+    const unusedCards = hand.filter((card) => isInvestigationKey(card) ? !revealedRef.current.includes(card) : !usedTacticsRef.current.includes(card));
+    const carry = retainNextHandRef.current ? unusedCards.slice(0, 2) : [];
+    const released = hand.filter((card) => !carry.includes(card));
+    const dealt = drawDeckHand(drawPile, [...discardPile, ...released], carry);
     setPassengerIndex((value) => value + 1);
     setFocus(maxFocus);
     focusRef.current = maxFocus;
     setRevealed([]);
     revealedRef.current = [];
-    setHand(dealActionHand(actionDeck));
+    setDrawPile(dealt.drawPile);
+    setDiscardPile(dealt.discardPile);
+    setHand(dealt.hand);
     setRedrawUsed(false);
     redrawUsedRef.current = false;
+    setUsedTactics([]);
+    usedTacticsRef.current = [];
+    setFreeActionReady(false);
+    freeActionReadyRef.current = false;
+    setRetainNextHand(false);
+    retainNextHandRef.current = false;
+    setVerdictBonusReady(false);
+    verdictBonusReadyRef.current = false;
     setResult(null);
     setPhase("inspection");
   };
@@ -923,6 +1054,8 @@ export default function Home() {
     setUpgrades((items) => [...items, upgrade.id]);
     const nextDeck = [...actionDeck, upgrade.deckCard];
     setActionDeck(nextDeck);
+    setDrawPile([upgrade.deckCard, ...drawPile]);
+    setDiscardPile([...discardPile, ...hand]);
     if (upgrade.id === "red-thread") setTrust((value) => value + 1);
     const nextNight = nightIndex + 1;
     const nextIncident = runIncidents[nextNight];
@@ -933,9 +1066,17 @@ export default function Home() {
     focusRef.current = nextFocus;
     setRevealed([]);
     revealedRef.current = [];
-    setHand(dealActionHand(nextDeck));
+    setHand([]);
     setRedrawUsed(false);
     redrawUsedRef.current = false;
+    setUsedTactics([]);
+    usedTacticsRef.current = [];
+    setFreeActionReady(false);
+    freeActionReadyRef.current = false;
+    setRetainNextHand(false);
+    retainNextHandRef.current = false;
+    setVerdictBonusReady(false);
+    verdictBonusReadyRef.current = false;
     verdictLockedRef.current = false;
     setResult(null);
     setPhase("briefing");
@@ -945,7 +1086,11 @@ export default function Home() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (phase !== "inspection") return;
       const handIndex = Number(event.key) - 1;
-      if (handIndex >= 0 && handIndex < hand.length) investigate(hand[handIndex]);
+      if (handIndex >= 0 && handIndex < hand.length) {
+        const card = hand[handIndex];
+        if (isInvestigationKey(card)) investigate(card);
+        else playTactic(card);
+      }
       if (event.key.toLowerCase() === "r") redrawHand();
       if (event.key.toLowerCase() === "p") callSupport();
       if (event.key.toLowerCase() === "a") makeVerdict("allow");
@@ -953,7 +1098,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [callSupport, hand, investigate, makeVerdict, phase, redrawHand]);
+  }, [callSupport, hand, investigate, makeVerdict, phase, playTactic, redrawHand]);
 
   const ending = useMemo(() => {
     if (trust <= 0) return { mark: "×", kicker: "人事科 · 即时通知", title: "你的检票钳被收走了", body: "误拒不断累积。站长没有责骂你，只让你交回制服。雨棚下仍有人等着一辆不会再由你检票的车。" };
@@ -978,6 +1123,7 @@ export default function Home() {
         <div className="top-actions">
           {phase !== "title" && <span className="run-score">夜班记录 <b>{score}</b></span>}
           <button className="icon-button" onClick={() => setShowArchive(true)}>乘客档案</button>
+          <button className="icon-button deck-button" onClick={() => setShowDeck(true)}>调查牌组</button>
           <button className="icon-button" onClick={() => setShowGuide(true)}>值班手册</button>
           <button className="icon-button sound-button" onClick={() => setSoundOn((value) => !value)} aria-label={soundOn ? "关闭声音" : "开启声音"}>{soundOn ? "声 · 开" : "声 · 关"}</button>
         </div>
@@ -986,9 +1132,9 @@ export default function Home() {
       {phase === "title" && (
         <section className="title-screen">
           <div className="title-copy">
-            <div className="eyebrow"><span /> 规则推理卡牌游戏</div>
+            <div className="eyebrow"><span /> V2.0 · 规则推理构筑游戏</div>
             <h1>零点之后，<br /><em>不要放错任何人。</em></h1>
-            <p className="lead">二十四位可能出现的乘客，每次值班都会重组调查牌组、人物编组与连锁事件。抽取行动、调整牌组权重，让前一次处置成为后续乘客的新线索。</p>
+            <p className="lead">让行动牌真正流经抽牌堆与弃牌堆，在二十四位乘客、随机规则与人物连锁之间构筑你的调查方式。使用策略牌扭转节奏，并在每夜终站完成重点复核。</p>
             <div className="title-buttons">
               <button className="primary-button" onClick={startRun}><span>开始今晚值班</span><b>→</b></button>
               <button className="secondary-button" onClick={() => setShowArchive(true)}>查看本机档案</button>
@@ -1050,7 +1196,7 @@ export default function Home() {
               <h1>{night.label}</h1>
               <p>{night.subtitle}</p>
             </div>
-            <div className="weather-card"><small>{contract.name} · 记录 ×{contract.multiplier.toFixed(1)}</small><strong>{night.weather}</strong><span>随机编组 {activePassengers.length} 人 · 调查牌组 {actionDeck.length} 张 · 每人抽 4 张</span></div>
+            <div className="weather-card"><small>{contract.name} · 记录 ×{contract.multiplier.toFixed(1)}</small><strong>{night.weather}</strong><span>随机编组 {activePassengers.length} 人 · 牌组 {actionDeck.length} 张 · 真实抽弃循环</span></div>
           </div>
           <div className="rules-board">
             <div className="board-title"><span>本夜临时乘车规则</span><small>规则每晚更换，请勿沿用昨日经验</small></div>
@@ -1105,10 +1251,10 @@ export default function Home() {
               <div className="decision-tip"><span>判定原则</span><p>违反任意一条规则即可拒载；可疑不等于违规。</p></div>
             </aside>
 
-            <article className="passenger-card" style={{ "--passenger-color": passenger.color } as React.CSSProperties}>
+            <article className={`passenger-card ${isElite ? "elite-passenger" : ""}`} style={{ "--passenger-color": passenger.color } as React.CSSProperties}>
               <div className="ticket-edge left-edge" aria-hidden="true" />
               <div className="passenger-head">
-                <span>夜行乘车证</span><b>NO. {passenger.number}</b>
+                <span>夜行乘车证</span>{isElite && <em className="elite-badge">终站重点复核</em>}<b>NO. {passenger.number}</b>
               </div>
               <div className="identity-row">
                 <div className="portrait-block">
@@ -1137,29 +1283,42 @@ export default function Home() {
             <aside className="decision-panel">
               <div className="panel-label">最终处置</div>
               <p>调查后，根据本夜规则作出决定。提交后无法撤回。</p>
+              {isElite && <div className={`elite-check ${eliteReady ? "ready" : ""}`}><b>{eliteReady ? "复核条件已满足" : "重点复核尚未完成"}</b><span>{eliteReady ? "已取得至少两条记录，可以提交处置。" : `还需 ${2 - revealed.length} 条调查记录才能提交。`}</span></div>}
               <div className="decision-buttons">
-                <button className="allow-button" onClick={() => makeVerdict("allow")} disabled={phase === "result"}><span>准予乘车</span><small>A 键</small></button>
-                <button className="deny-button" onClick={() => makeVerdict("deny")} disabled={phase === "result"}><span>拒绝上车</span><small>D 键</small></button>
+                <button className="allow-button" onClick={() => makeVerdict("allow")} disabled={phase === "result" || !eliteReady}><span>准予乘车</span><small>A 键</small></button>
+                <button className="deny-button" onClick={() => makeVerdict("deny")} disabled={phase === "result" || !eliteReady}><span>拒绝上车</span><small>D 键</small></button>
               </div>
               <div className="salary-box"><span>本夜津贴 · 连判 {streak}</span><strong>¥ {credits}</strong><small>{streak >= 2 ? `连判奖励已提高至 +${Math.min(streak - 1, 4) * 3}` : "连续正确判断可提高每次津贴"}</small></div>
             </aside>
           </div>
 
           <div className="action-dock">
-            <div className="focus-counter"><span>本次专注</span><b>{focus}<small> / {maxFocus}</small></b><p>牌组 {actionDeck.length} 张 · 手牌 4 张</p></div>
-            <div className="action-hand">
-              {hand.map((key, index) => {
-                const action = ACTIONS[key]; const cost = actionCost(key); const used = revealed.includes(key); const unavailable = focus < cost || phase === "result";
-                return <button key={key} className={`action-card ${used ? "used" : ""}`} onClick={() => investigate(key)} disabled={used || unavailable}>
-                  <span className="key-hint">{index + 1}</span><b className="action-mark">{action.mark}</b><strong>{action.name}</strong><small>{action.hint}</small><i>{used ? "已使用" : `${cost} 专注`}</i>
-                </button>;
-              })}
-              <button className={`action-card redraw-card ${redrawUsed ? "used" : ""}`} onClick={redrawHand} disabled={redrawUsed || focus < 1 || phase === "result"}>
-                <span className="key-hint">R</span><b className="action-mark">↻</b><strong>重整手牌</strong><small>优先抽取尚未调查的行动</small><i>{redrawUsed ? "本位已使用" : "1 专注"}</i>
-              </button>
-              <button className={`action-card support-card ${supportAvailable ? "" : "used"}`} onClick={callSupport} disabled={!supportAvailable || revealed.length === Object.keys(ACTIONS).length || phase === "result"}>
-                <span className="key-hint">P</span><b className="action-mark">援</b><strong>乘警协查</strong><small>免费补齐一项核验记录</small><i>{supportAvailable ? "每夜 1 次" : "本夜已使用"}</i>
-              </button>
+            <div className="focus-counter"><span>本次专注</span><b>{focus}<small> / {maxFocus}</small></b><p>抽牌 {drawPile.length} · 弃牌 {discardPile.length} · 总计 {actionDeck.length}</p></div>
+            <div className="action-zone">
+              {(freeActionReady || retainNextHand || verdictBonusReady) && <div className="tactic-status-row">
+                {freeActionReady && <span>零 下一次调查免费</span>}
+                {retainNextHand && <span>留 保留至多两张牌</span>}
+                {verdictBonusReady && <span>奖 正确处置 +6</span>}
+              </div>}
+              <div className="action-hand">
+                {hand.map((card, index) => {
+                  const info = getDeckCardInfo(card);
+                  const investigation = isInvestigationKey(card);
+                  const cost = investigation ? actionCost(card) : 0;
+                  const used = investigation ? revealed.includes(card) : usedTactics.includes(card);
+                  const tacticUnavailable = !investigation && ((card === "field-kit" && focus >= maxFocus) || (card === "cold-lamp" && ["pulse", "bag", "mirror"].every((key) => revealed.includes(key as InvestigationKey))));
+                  const unavailable = phase === "result" || used || tacticUnavailable || (investigation && focus < cost);
+                  return <button key={`${card}-${index}`} className={`action-card ${investigation ? "" : "tactic-card"} ${used ? "used" : ""}`} onClick={() => investigation ? investigate(card) : playTactic(card)} disabled={unavailable}>
+                    <span className="key-hint">{index + 1}</span><b className="action-mark">{info.mark}</b><strong>{info.name}</strong><small>{info.hint}</small><i>{used ? "已使用" : investigation ? `${cost} 专注` : tacticUnavailable ? "当前不可用" : "策略牌"}</i>
+                  </button>;
+                })}
+                <button className={`action-card redraw-card ${redrawUsed ? "used" : ""}`} onClick={redrawHand} disabled={redrawUsed || focus < 1 || phase === "result"}>
+                  <span className="key-hint">R</span><b className="action-mark">↻</b><strong>重整手牌</strong><small>弃掉当前手牌，再从牌库抽取</small><i>{redrawUsed ? "本位已使用" : "1 专注"}</i>
+                </button>
+                <button className={`action-card support-card ${supportAvailable ? "" : "used"}`} onClick={callSupport} disabled={!supportAvailable || revealed.length === Object.keys(ACTIONS).length || phase === "result"}>
+                  <span className="key-hint">P</span><b className="action-mark">援</b><strong>乘警协查</strong><small>免费补齐一项核验记录</small><i>{supportAvailable ? "每夜 1 次" : "本夜已使用"}</i>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1173,6 +1332,8 @@ export default function Home() {
                 <blockquote>{result.passenger.farewell}</blockquote>
                 <div className="result-impact">
                   {result.correct ? <><span className="positive">连判 {result.streak} · 夜班津贴 +{result.reward}</span><span className={result.directiveMet ? "directive-hit" : "neutral"}>{result.directiveMet ? `密令完成 · 额外 +${result.directiveReward}` : `密令未完成 · ${directive.title}`}</span></> : result.passenger.isAnomaly ? <span className="negative">连判中断 · 车厢污染上升</span> : <span className="negative">连判中断 · 公众信誉下降</span>}
+                  {result.tacticReward > 0 && <span className="tactic-hit">策略生效 · 复核章 +{result.tacticReward}</span>}
+                  {result.eliteBonus > 0 && <span className="elite-hit">重点复核完成 · +{result.eliteBonus}</span>}
                   {result.storyAdvanced && <span className="story-hit">连锁已记录 · {storyLink.title}</span>}
                 </div>
                 <button className="primary-button centered" onClick={continueAfterResult}><span>{result.endCause ? "查看夜班结局" : passengerIndex === activePassengers.length - 1 ? "结束本夜检票" : "呼叫下一位乘客"}</span><b>→</b></button>
@@ -1188,11 +1349,11 @@ export default function Home() {
           <div className="upgrade-grid">
             {availableUpgrades.map((upgrade) => (
               <button className="upgrade-card" key={upgrade.id} onClick={() => chooseUpgrade(upgrade)}>
-                <span className="upgrade-kicker">{upgrade.kicker}</span><b className="upgrade-mark">{upgrade.mark}</b><h2>{upgrade.name}</h2><p>{upgrade.description}</p><span className="deck-addition">加入牌组 · {ACTIONS[upgrade.deckCard].mark} {ACTIONS[upgrade.deckCard].name}</span><span className="choose-label">选择此牌 <b>→</b></span>
+                <span className="upgrade-kicker">{upgrade.kicker}</span><b className="upgrade-mark">{upgrade.mark}</b><h2>{upgrade.name}</h2><p>{upgrade.description}</p><span className="deck-addition">加入牌组 · {getDeckCardInfo(upgrade.deckCard).mark} {getDeckCardInfo(upgrade.deckCard).name}</span><span className="choose-label">选择此牌 <b>→</b></span>
               </button>
             ))}
           </div>
-          <div className="shift-summary"><span>当前记录 <b>{score}</b></span><span>正确拦截 <b>{caught}</b></span><span>剩余信誉 <b>{trust}</b></span><span>车厢污染 <b>{contamination} / 3</b></span></div>
+          <div className="shift-summary"><span>当前记录 <b>{score}</b></span><span>重点复核 <b>{eliteCleared} / {nightIndex + 1}</b></span><span>策略使用 <b>{tacticsPlayed}</b></span><span>牌组规模 <b>{actionDeck.length}</b></span></div>
         </section>
       )}
 
@@ -1204,7 +1365,7 @@ export default function Home() {
             <h1>{ending.title}</h1>
             <p>{ending.body}</p>
             <div className="final-score"><small>本次夜班记录</small><strong>{score}</strong><span>{score >= bestScore ? "本机最佳记录" : `历史最佳 ${bestScore}`}</span></div>
-            <div className="ending-stats"><div><small>拦截异常</small><b>{caught} / 6</b></div><div><small>最佳连判</small><b>{runBestStreak}</b></div><div><small>{contract.name}倍率</small><b>×{contract.multiplier.toFixed(1)}</b></div></div>
+            <div className="ending-stats"><div><small>拦截异常</small><b>{caught}</b></div><div><small>重点复核</small><b>{eliteCleared} / 3</b></div><div><small>策略使用</small><b>{tacticsPlayed}</b></div><div><small>{contract.name}倍率</small><b>×{contract.multiplier.toFixed(1)}</b></div></div>
             <button className="primary-button centered" onClick={startRun}><span>重新开始一班</span><b>↻</b></button>
             <button className="text-button" onClick={() => setPhase("title")}>返回标题画面</button>
           </div>
@@ -1239,6 +1400,32 @@ export default function Home() {
         </div>
       )}
 
+      {showDeck && (
+        <div className="guide-overlay" role="dialog" aria-modal="true" aria-label="调查牌组">
+          <div className="deck-book">
+            <button className="close-button" onClick={() => setShowDeck(false)} aria-label="关闭调查牌组">×</button>
+            <span className="section-kicker">V2.0 · 值班牌库</span>
+            <h2>调查牌组</h2>
+            <p className="deck-intro">每次抽取会真实消耗抽牌堆；当前抽牌堆用尽后，弃牌堆会洗回继续使用。夜间强化既带来常驻能力，也会向牌组加入一张新牌。</p>
+            <div className="deck-summary">
+              <span><small>总牌数</small><b>{actionDeck.length}</b></span>
+              <span><small>抽牌堆</small><b>{drawPile.length}</b></span>
+              <span><small>弃牌堆</small><b>{discardPile.length}</b></span>
+              <span><small>本局策略</small><b>{tacticsPlayed}</b></span>
+            </div>
+            <div className="deck-grid">
+              {(Object.entries(deckCounts) as [DeckCardKey, number][]).map(([key, count]) => {
+                const info = getDeckCardInfo(key);
+                const investigation = isInvestigationKey(key);
+                return <article className={`deck-card ${investigation ? "" : "special"}`} key={key}>
+                  <b>{info.mark}</b><div><small>{investigation ? "调查牌" : "策略牌"}</small><h3>{info.name}</h3><p>{info.hint}</p></div><strong>×{count}</strong>
+                </article>;
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
       {showGuide && (
         <div className="guide-overlay" role="dialog" aria-modal="true" aria-label="值班手册">
           <div className="guide-book">
@@ -1247,12 +1434,14 @@ export default function Home() {
             <h2>值班手册</h2>
             <div className="guide-steps">
               <div><b>01</b><p><strong>先读本夜规则</strong><span>规则每夜更换，上一夜的禁令可能不再有效。</span></p></div>
-              <div><b>02</b><p><strong>从牌组抽取行动</strong><span>每位乘客抽四张行动牌；可支付 1 专注重整一次，乘警协查每夜免费一次。</span></p></div>
-              <div><b>03</b><p><strong>留意人物连锁</strong><span>本夜首位乘客的处置，会为末位乘客生成一条额外关系线索。</span></p></div>
-              <div><b>04</b><p><strong>保住这趟列车</strong><span>信誉归零或污染达到 3 点，夜班将提前结束。</span></p></div>
-              <div><b>05</b><p><strong>构筑调查牌组</strong><span>夜间强化会额外加入一张对应行动，提高之后抽到它的概率。</span></p></div>
+              <div><b>02</b><p><strong>管理抽牌与弃牌</strong><span>每位乘客抽四张牌；未保留的手牌会进入弃牌堆，抽牌堆耗尽时自动洗回。</span></p></div>
+              <div><b>03</b><p><strong>打出策略牌</strong><span>策略牌不消耗专注，可恢复资源、保留手牌、免费调查或提高正确处置收益。</span></p></div>
+              <div><b>04</b><p><strong>完成重点复核</strong><span>每夜最后一位是重点乘客，必须取得至少两条调查记录后才能提交处置。</span></p></div>
+              <div><b>05</b><p><strong>构筑调查牌组</strong><span>每夜结束选择一项强化，并把对应的新调查牌或策略牌永久加入本局牌组。</span></p></div>
+              <div><b>06</b><p><strong>留意人物连锁</strong><span>本夜首位乘客的处置，会为末位乘客生成一条额外关系线索。</span></p></div>
+              <div><b>07</b><p><strong>保住这趟列车</strong><span>信誉归零或污染达到 3 点，夜班将提前结束。</span></p></div>
             </div>
-            <div className="shortcut-line"><span>键盘快捷键</span><b>1–4 调查</b><b>R 重整</b><b>P 协查</b><b>A / D 处置</b></div>
+            <div className="shortcut-line"><span>键盘快捷键</span><b>1–4 出牌</b><b>R 重整</b><b>P 协查</b><b>A / D 处置</b></div>
             <button className="primary-button centered" onClick={() => setShowGuide(false)}><span>合上手册</span><b>✓</b></button>
           </div>
         </div>
