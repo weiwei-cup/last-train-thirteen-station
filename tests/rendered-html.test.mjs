@@ -25,5 +25,6 @@ test("renders the complete game shell", async () => {
   assert.match(html, /值班手册/);
   assert.match(html, /乘客档案/);
   assert.match(html, /二十四位可能出现的乘客/);
+  assert.match(html, /线路异况与装备牌组/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/i);
 });

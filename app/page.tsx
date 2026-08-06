@@ -74,6 +74,27 @@ type Upgrade = {
   description: string;
 };
 
+type RouteIncident = {
+  id: string;
+  mark: string;
+  title: string;
+  description: string;
+  effect: string;
+  action?: InvestigationKey;
+  costDelta?: number;
+  focusDelta?: number;
+  rewardDelta?: number;
+};
+
+type StoredRecord = {
+  bestScore?: number;
+  runs?: number;
+  bestStreak?: number;
+  archiveIds?: string[];
+  soundOn?: boolean;
+  lastRosterIds?: string[][];
+};
+
 const STORAGE_KEY = "last-train-thirteen-station-v1";
 const ASSET_PREFIX = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
@@ -98,6 +119,15 @@ const CONTRACTS: DutyContract[] = [
   { id: "standard", mark: "○", name: "常规值班", subtitle: "第一次游玩推荐", description: "每位乘客 3 点专注，3 点公众信誉。没有额外惩罚。", focus: 3, trust: 3, contamination: 0, multiplier: 1 },
   { id: "blackout", mark: "◒", name: "熄灯巡查", subtitle: "信息取舍更加严格", description: "每位乘客只有 2 点专注，但最终记录提高 40%。", focus: 2, trust: 3, contamination: 0, multiplier: 1.4 },
   { id: "fogline", mark: "≈", name: "雾线直达", subtitle: "资深检票员试炼", description: "以 2 点信誉和 1 点污染开始，最终记录提高 70%。", focus: 3, trust: 2, contamination: 1, multiplier: 1.7 },
+];
+
+const ROUTE_INCIDENTS: RouteIncident[] = [
+  { id: "fogged-mirror", mark: "雾", title: "银镜结雾", description: "车厢温差让镜面反复蒙雾，辨认倒影需要更久。", effect: "照见倒影 +1 专注", action: "mirror", costDelta: 1 },
+  { id: "crossed-radio", mark: "噪", title: "广播串音", description: "废弃线路的广播混入站台，乘客回答更难听清。", effect: "简短问询 +1 专注", action: "question", costDelta: 1 },
+  { id: "fresh-ledger", mark: "簿", title: "新票样对照册", description: "调度室送来当夜完整票样，核对钢印变得更快。", effect: "核验车票 -1 专注", action: "ticket", costDelta: -1 },
+  { id: "patrol-lamp", mark: "灯", title: "乘警探照灯", description: "一盏强光手提灯留在值班台，可迅速照清行李夹层。", effect: "检查行李 -1 专注", action: "bag", costDelta: -1 },
+  { id: "station-tea", mark: "茶", title: "站务员的浓茶", description: "休息室送来一杯滚烫浓茶，今夜判断格外清醒。", effect: "每位乘客 +1 专注", focusDelta: 1 },
+  { id: "urgent-bonus", mark: "奖", title: "临时加班津贴", description: "线路晚点导致人手紧张，正确处置可获得额外补贴。", effect: "正确判断额外 +4 津贴", rewardDelta: 4 },
 ];
 
 const NIGHTS: Night[] = [
@@ -425,13 +455,30 @@ function shuffle<T>(items: T[]): T[] {
   return next;
 }
 
-function createRunRosters(): Passenger[][] {
+function choosePassengerPair(group: Passenger[], recentIds: Set<string>): Passenger[] {
+  const fresh = shuffle(group.filter((item) => !recentIds.has(item.id)));
+  const first = fresh[0] ?? shuffle(group)[0];
+  const remaining = group.filter((item) => item.id !== first.id);
+  return [first, shuffle(remaining)[0]];
+}
+
+function createRunRosters(previousRosters: string[][] = []): Passenger[][] {
   return NIGHTS.map((night, index) => {
     const pool = [...night.passengers, ...EXTRA_PASSENGERS[index]];
-    const ordinary = shuffle(pool.filter((item) => !item.isAnomaly)).slice(0, 2);
-    const anomalies = shuffle(pool.filter((item) => item.isAnomaly)).slice(0, 2);
+    const recentIds = new Set(previousRosters[index] ?? []);
+    const ordinary = choosePassengerPair(pool.filter((item) => !item.isAnomaly), recentIds);
+    const anomalies = choosePassengerPair(pool.filter((item) => item.isAnomaly), recentIds);
     return shuffle([...ordinary, ...anomalies]);
   });
+}
+
+function createRunIncidents(): RouteIncident[] {
+  return shuffle(ROUTE_INCIDENTS).slice(0, NIGHTS.length);
+}
+
+function createUpgradeOffers(): UpgradeId[][] {
+  const deck = shuffle(UPGRADES).map((upgrade) => upgrade.id);
+  return [deck.slice(0, 3), deck.slice(3, 6)];
 }
 
 function playTone(kind: "tap" | "good" | "bad", enabled: boolean) {
@@ -455,6 +502,9 @@ export default function Home() {
   const [phase, setPhase] = useState<Phase>("title");
   const [contractId, setContractId] = useState<ContractId>("standard");
   const [runRosters, setRunRosters] = useState<Passenger[][]>(() => NIGHTS.map((night) => night.passengers));
+  const [runIncidents, setRunIncidents] = useState<RouteIncident[]>(() => ROUTE_INCIDENTS.slice(0, NIGHTS.length));
+  const [upgradeOffers, setUpgradeOffers] = useState<UpgradeId[][]>(() => [UPGRADES.slice(0, 3).map((item) => item.id), UPGRADES.slice(3, 6).map((item) => item.id)]);
+  const [lastRosterIds, setLastRosterIds] = useState<string[][]>([]);
   const [nightIndex, setNightIndex] = useState(0);
   const [passengerIndex, setPassengerIndex] = useState(0);
   const [focus, setFocus] = useState(3);
@@ -480,21 +530,23 @@ export default function Home() {
   const night = NIGHTS[nightIndex];
   const contract = CONTRACTS.find((item) => item.id === contractId) ?? CONTRACTS[0];
   const activePassengers = runRosters[nightIndex] ?? night.passengers;
+  const incident = runIncidents[nightIndex] ?? ROUTE_INCIDENTS[0];
   const passenger = activePassengers[passengerIndex];
-  const maxFocus = contract.focus + (upgrades.includes("night-tea") ? 1 : 0);
+  const maxFocus = contract.focus + (upgrades.includes("night-tea") ? 1 : 0) + (incident.focusDelta ?? 0);
   const maxTrust = contract.trust + (upgrades.includes("red-thread") ? 1 : 0);
   const rawScore = Math.max(0, credits + caught * 20 + trust * 10 - contamination * 15 - mistakes * 5);
   const score = Math.floor(rawScore * contract.multiplier);
 
   useEffect(() => {
     try {
-      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") as { bestScore?: number; runs?: number; bestStreak?: number; archiveIds?: string[]; soundOn?: boolean };
+      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") as StoredRecord;
       // Hydration has to happen after mount because the archive lives in browser-only storage.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setBestScore(stored.bestScore || 0);
       setRuns(stored.runs || 0);
       setBestStreak(stored.bestStreak || 0);
       setArchiveIds(Array.isArray(stored.archiveIds) ? stored.archiveIds : []);
+      setLastRosterIds(Array.isArray(stored.lastRosterIds) ? stored.lastRosterIds : []);
       if (typeof stored.soundOn === "boolean") setSoundOn(stored.soundOn);
     } catch {
       // A damaged local record should never stop the train.
@@ -511,25 +563,26 @@ export default function Home() {
     setBestScore(nextBest);
     setRuns(nextRuns);
     setBestStreak(nextBestStreak);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ bestScore: nextBest, runs: nextRuns, bestStreak: nextBestStreak, archiveIds, soundOn }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ bestScore: nextBest, runs: nextRuns, bestStreak: nextBestStreak, archiveIds, soundOn, lastRosterIds }));
     // Ending is entered once per run; the state reset prevents duplicate writes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ bestScore, runs, bestStreak, archiveIds, soundOn }));
-  }, [soundOn, bestScore, runs, bestStreak, archiveIds]);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ bestScore, runs, bestStreak, archiveIds, soundOn, lastRosterIds }));
+  }, [soundOn, bestScore, runs, bestStreak, archiveIds, lastRosterIds]);
 
   const availableUpgrades = useMemo(() => {
-    const remaining = UPGRADES.filter((upgrade) => !upgrades.includes(upgrade.id));
-    const offset = nightIndex === 0 ? 0 : 2;
-    return [...remaining.slice(offset, offset + 3), ...remaining].slice(0, 3);
-  }, [nightIndex, upgrades]);
+    return (upgradeOffers[nightIndex] ?? [])
+      .map((id) => UPGRADES.find((upgrade) => upgrade.id === id))
+      .filter((upgrade): upgrade is Upgrade => upgrade !== undefined && !upgrades.includes(upgrade.id));
+  }, [nightIndex, upgradeOffers, upgrades]);
 
   const actionCost = useCallback((key: InvestigationKey) => {
     if (key === "mirror" && upgrades.includes("silver-mirror")) return 0;
-    return ACTIONS[key].cost;
-  }, [upgrades]);
+    const incidentDelta = incident.action === key ? incident.costDelta ?? 0 : 0;
+    return Math.max(0, ACTIONS[key].cost + incidentDelta);
+  }, [incident, upgrades]);
 
   const startRun = () => {
     playTone("tap", soundOn);
@@ -538,8 +591,13 @@ export default function Home() {
 
   const chooseContract = (selected: DutyContract) => {
     playTone("good", soundOn);
+    const nextRosters = createRunRosters(lastRosterIds);
+    const nextRosterIds = nextRosters.map((roster) => roster.map((item) => item.id));
     setContractId(selected.id);
-    setRunRosters(createRunRosters());
+    setRunRosters(nextRosters);
+    setLastRosterIds(nextRosterIds);
+    setRunIncidents(createRunIncidents());
+    setUpgradeOffers(createUpgradeOffers());
     setNightIndex(0);
     setPassengerIndex(0);
     setFocus(selected.focus);
@@ -590,7 +648,7 @@ export default function Home() {
     if (correct) {
       nextStreak = streak + 1;
       setRunBestStreak((value) => Math.max(value, nextStreak));
-      reward = 12 + Math.min(nextStreak - 1, 4) * 3 + (upgrades.includes("old-ledger") ? 5 : 0);
+      reward = 12 + Math.min(nextStreak - 1, 4) * 3 + (upgrades.includes("old-ledger") ? 5 : 0) + (incident.rewardDelta ?? 0);
       setStreak(nextStreak);
       setCredits((value) => value + reward);
       if (passenger.isAnomaly) setCaught((value) => value + 1);
@@ -625,7 +683,7 @@ export default function Home() {
     setArchiveIds((items) => items.includes(passenger.id) ? items : [...items, passenger.id]);
     setResult({ correct, decision, passenger, title, explanation, reward, streak: nextStreak, endCause });
     setPhase("result");
-  }, [contamination, passenger, phase, soundOn, streak, trust, upgrades, whistleUsed]);
+  }, [contamination, incident, passenger, phase, soundOn, streak, trust, upgrades, whistleUsed]);
 
   const continueAfterResult = () => {
     playTone("tap", soundOn);
@@ -651,9 +709,10 @@ export default function Home() {
     setUpgrades((items) => [...items, upgrade.id]);
     if (upgrade.id === "red-thread") setTrust((value) => value + 1);
     const nextNight = nightIndex + 1;
+    const nextIncident = runIncidents[nextNight];
     setNightIndex(nextNight);
     setPassengerIndex(0);
-    setFocus(contract.focus + (upgrade.id === "night-tea" || upgrades.includes("night-tea") ? 1 : 0));
+    setFocus(contract.focus + (upgrade.id === "night-tea" || upgrades.includes("night-tea") ? 1 : 0) + (nextIncident?.focusDelta ?? 0));
     setRevealed([]);
     setResult(null);
     setPhase("briefing");
@@ -704,7 +763,7 @@ export default function Home() {
           <div className="title-copy">
             <div className="eyebrow"><span /> 规则推理卡牌游戏</div>
             <h1>零点之后，<br /><em>不要放错任何人。</em></h1>
-            <p className="lead">二十四位可能出现的乘客，每次值班随机遇见十二位。检查车票、倒影与心跳，在末班车驶入浓雾前，决定谁能上车。</p>
+            <p className="lead">二十四位可能出现的乘客，每次值班都会更换人物编组、线路异况与装备牌组。检查车票、倒影与心跳，在末班车驶入浓雾前，决定谁能上车。</p>
             <div className="title-buttons">
               <button className="primary-button" onClick={startRun}><span>开始今晚值班</span><b>→</b></button>
               <button className="secondary-button" onClick={() => setShowArchive(true)}>查看本机档案</button>
@@ -766,7 +825,7 @@ export default function Home() {
               <h1>{night.label}</h1>
               <p>{night.subtitle}</p>
             </div>
-            <div className="weather-card"><small>{contract.name} · 记录 ×{contract.multiplier.toFixed(1)}</small><strong>{night.weather}</strong><span>本夜随机编组 {activePassengers.length} 人</span></div>
+            <div className="weather-card"><small>{contract.name} · 记录 ×{contract.multiplier.toFixed(1)}</small><strong>{night.weather}</strong><span>本夜随机编组 {activePassengers.length} 人 · 优先避开上一局阵容</span></div>
           </div>
           <div className="rules-board">
             <div className="board-title"><span>本夜临时乘车规则</span><small>规则每晚更换，请勿沿用昨日经验</small></div>
@@ -779,6 +838,11 @@ export default function Home() {
               ))}
             </div>
           </div>
+          <article className="incident-card">
+            <b>{incident.mark}</b>
+            <div><small>本夜线路异况</small><h3>{incident.title}</h3><p>{incident.description}</p></div>
+            <strong>{incident.effect}</strong>
+          </article>
           {upgrades.length > 0 && (
             <div className="equipped-row"><span>本局已装备</span>{upgrades.map((id) => { const item = UPGRADES.find((upgrade) => upgrade.id === id)!; return <span className="mini-upgrade" key={id}>{item.mark} {item.name}</span>; })}</div>
           )}
@@ -790,7 +854,7 @@ export default function Home() {
         <section className="inspection-screen content-screen">
           <div className="shift-status">
             <div className="night-progress">
-              <span>{night.label} · {night.time}</span>
+              <span>{night.label} · {night.time} · {incident.title}</span>
               <div className="progress-dots">{activePassengers.map((item, index) => <i key={item.id} className={index < passengerIndex ? "done" : index === passengerIndex ? "current" : ""} />)}</div>
               <small>第 {passengerIndex + 1} / {activePassengers.length} 位</small>
             </div>
@@ -804,6 +868,7 @@ export default function Home() {
             <aside className="active-rules">
               <div className="panel-label">今夜规则</div>
               {night.rules.map((rule) => <div className="compact-rule" key={rule.mark}><b>{rule.mark}</b><p><strong>{rule.title}</strong><span>{rule.detail}</span></p></div>)}
+              <div className="compact-incident"><b>{incident.mark}</b><p><strong>{incident.title}</strong><span>{incident.effect}</span></p></div>
               <div className="decision-tip"><span>判定原则</span><p>违反任意一条规则即可拒载；可疑不等于违规。</p></div>
             </aside>
 
@@ -846,7 +911,7 @@ export default function Home() {
           </div>
 
           <div className="action-dock">
-            <div className="focus-counter"><span>本次专注</span><b>{focus}<small> / {maxFocus}</small></b><p>行动牌仅对当前乘客有效</p></div>
+            <div className="focus-counter"><span>本次专注</span><b>{focus}<small> / {maxFocus}</small></b><p>线路异况已计入行动费用</p></div>
             <div className="action-hand">
               {(Object.keys(ACTIONS) as InvestigationKey[]).map((key, index) => {
                 const action = ACTIONS[key]; const cost = actionCost(key); const used = revealed.includes(key); const unavailable = focus < cost || phase === "result";
@@ -877,7 +942,7 @@ export default function Home() {
 
       {phase === "shift-end" && (
         <section className="upgrade-screen content-screen">
-          <div className="upgrade-heading"><span className="section-kicker">{night.label}结束 · 临时休息室</span><h1>留下一张值班牌</h1><p>站长允许你从失物柜中选取一件物品。它将在之后的夜晚持续生效。</p></div>
+          <div className="upgrade-heading"><span className="section-kicker">{night.label}结束 · 临时休息室</span><h1>留下一张值班牌</h1><p>本局失物柜已经随机重排。选择一件物品，它将在之后的夜晚持续生效。</p></div>
           <div className="upgrade-grid">
             {availableUpgrades.map((upgrade) => (
               <button className="upgrade-card" key={upgrade.id} onClick={() => chooseUpgrade(upgrade)}>
@@ -909,7 +974,7 @@ export default function Home() {
           <div className="archive-book">
             <button className="close-button" onClick={() => setShowArchive(false)} aria-label="关闭乘客档案">×</button>
             <div className="archive-heading">
-              <div><span className="section-kicker">终雾线 · 本机调查记录</span><h2>乘客档案</h2><p>完成一次处置即可收录人物真相。每夜会从八位候选者中随机出现四位。</p></div>
+              <div><span className="section-kicker">终雾线 · 本机调查记录</span><h2>乘客档案</h2><p>完成一次处置即可收录人物真相。每夜从八位候选者中出现四位，重新值班时会优先避开上一局阵容。</p></div>
               <div className="archive-count"><strong>{archiveIds.length}</strong><span>/ {ALL_PASSENGERS.length}<small>已收录</small></span></div>
             </div>
             <div className="archive-grid">
