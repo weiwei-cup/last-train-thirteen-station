@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-type Phase = "title" | "briefing" | "inspection" | "result" | "shift-end" | "ending";
+type Phase = "title" | "contract" | "briefing" | "inspection" | "result" | "shift-end" | "ending";
 type InvestigationKey = "ticket" | "mirror" | "question" | "pulse" | "bag";
 type Tone = "safe" | "warning" | "strange";
 
@@ -46,7 +46,22 @@ type VerdictResult = {
   title: string;
   explanation: string;
   reward: number;
+  streak: number;
   endCause?: "trust" | "contamination";
+};
+
+type ContractId = "standard" | "blackout" | "fogline";
+
+type DutyContract = {
+  id: ContractId;
+  mark: string;
+  name: string;
+  subtitle: string;
+  description: string;
+  focus: number;
+  trust: number;
+  contamination: number;
+  multiplier: number;
 };
 
 type UpgradeId = "silver-mirror" | "double-punch" | "night-tea" | "red-thread" | "old-ledger" | "brass-whistle";
@@ -76,6 +91,12 @@ const UPGRADES: Upgrade[] = [
   { id: "red-thread", mark: "∞", name: "乘警红绳", kicker: "护身牌", description: "信誉上限与当前信誉各提高 1 点。" },
   { id: "old-ledger", mark: "冊", name: "旧站名册", kicker: "档案牌", description: "每次正确判断额外获得 5 元夜班津贴。" },
   { id: "brass-whistle", mark: "！", name: "黄铜警哨", kicker: "应急牌", description: "第一次放行异常乘客时，不增加车厢污染。" },
+];
+
+const CONTRACTS: DutyContract[] = [
+  { id: "standard", mark: "○", name: "常规值班", subtitle: "第一次游玩推荐", description: "每位乘客 3 点专注，3 点公众信誉。没有额外惩罚。", focus: 3, trust: 3, contamination: 0, multiplier: 1 },
+  { id: "blackout", mark: "◒", name: "熄灯巡查", subtitle: "信息取舍更加严格", description: "每位乘客只有 2 点专注，但最终记录提高 40%。", focus: 2, trust: 3, contamination: 0, multiplier: 1.4 },
+  { id: "fogline", mark: "≈", name: "雾线直达", subtitle: "资深检票员试炼", description: "以 2 点信誉和 1 点污染开始，最终记录提高 70%。", focus: 3, trust: 2, contamination: 1, multiplier: 1.7 },
 ];
 
 const NIGHTS: Night[] = [
@@ -251,6 +272,101 @@ const NIGHTS: Night[] = [
   },
 ];
 
+const EXTRA_PASSENGERS: Passenger[][] = [
+  [
+    {
+      id: "liang-qiu", number: "0717-05", name: "梁秋", age: "63", from: "旧钟楼", destination: "纸灯巷", ticket: "敬老月票", baggage: "一只停摆的节拍器", quote: "钟楼停了，人的日子还得照常往前走。", monogram: "梁", color: "#817d66", isAnomaly: false,
+      violation: "车票日期有效，银镜中也有完整倒影。", farewell: "他把节拍器放在膝上，车轮替它继续打拍子。",
+      findings: {
+        ticket: { label: "车票", text: "7 月 17 日完成年检，防伪孔与档案一致。", tone: "safe" },
+        mirror: { label: "银镜", text: "倒影完整，左手同样缺少一截小指。", tone: "safe" },
+        question: { label: "问询", text: "准确说出旧钟楼站只剩一边月台可用。", tone: "safe" },
+        pulse: { label: "心跳", text: "每分钟 64 次，节律稳定。", tone: "safe" },
+        bag: { label: "行李", text: "节拍器已经停摆，底部刻着四十年前的日期。", tone: "warning" },
+      },
+    },
+    {
+      id: "su-wan", number: "0717-06", name: "苏晚", age: "26", from: "河湾公寓", destination: "临河里", ticket: "夜间优惠票", baggage: "透明文件袋", quote: "我只是比日期早到了一点。列车不会介意的。", monogram: "苏", color: "#805f73", isAnomaly: true,
+      violation: "车票签发日期为 7 月 18 日，违反本夜第一条规则。", farewell: "文件袋里的日历自行翻到了明天。",
+      findings: {
+        ticket: { label: "车票", text: "7 月 18 日签发——距离现在还有二十三小时。", tone: "strange" },
+        mirror: { label: "银镜", text: "倒影存在，却穿着一件尚未被雨淋湿的外套。", tone: "warning" },
+        question: { label: "问询", text: "能说出明早的报纸头条，却说不清今晚的天气。", tone: "warning" },
+        pulse: { label: "心跳", text: "每分钟 74 次，规律。", tone: "safe" },
+        bag: { label: "行李", text: "文件袋中全是日期为明天的收据。", tone: "warning" },
+      },
+    },
+  ],
+  [
+    {
+      id: "zhou-lan", number: "0718-05", name: "周岚", age: "34", from: "北口市场", destination: "终雾站", ticket: "换乘票", baggage: "红色折叠伞", quote: "章盖得有些淡，售票员让我千万别再淋湿它。", monogram: "周", color: "#9e655b", isAnomaly: false,
+      violation: "红伞乘客持有有效的蓝色三角换乘章。", farewell: "她收好车票，鞋边落下一小圈普通的雨水。",
+      findings: {
+        ticket: { label: "车票", text: "褪色但有效的蓝色三角换乘章，编号可查。", tone: "safe" },
+        mirror: { label: "银镜", text: "倒影正常，伞骨在镜中没有异常弯曲。", tone: "safe" },
+        question: { label: "问询", text: "能说出北口市场换乘窗口今晚提前十分钟关闭。", tone: "safe" },
+        pulse: { label: "心跳", text: "每分钟 78 次，正常。", tone: "safe" },
+        bag: { label: "行李", text: "折叠伞和一袋仍温热的糖炒栗子。", tone: "safe" },
+      },
+    },
+    {
+      id: "bian-yi", number: "0718-06", name: "卞一", age: "41", from: "广播塔", destination: "纸灯巷", ticket: "单程硬座", baggage: "便携收音机", quote: "你听，下一班车已经在我身体里进站了。", monogram: "卞", color: "#647f86", isAnomaly: true,
+      violation: "胸腔内循环播放报站广播，并非人类心跳。", farewell: "车站喇叭突然用你的声音播报了一次晚点。",
+      findings: {
+        ticket: { label: "车票", text: "票面有效，没有涂改或补签痕迹。", tone: "safe" },
+        mirror: { label: "银镜", text: "倒影嘴唇未动，喉咙处却闪着红色信号灯。", tone: "warning" },
+        question: { label: "问询", text: "回答问题时总先响起一声广播提示音。", tone: "warning" },
+        pulse: { label: "心跳", text: "胸腔里传出：‘终雾站到了，请从左侧车门下车。’", tone: "strange" },
+        bag: { label: "行李", text: "收音机没有电池，仍在播放十三号站的到站广播。", tone: "warning" },
+      },
+    },
+  ],
+  [
+    {
+      id: "gu-ci", number: "0719-05", name: "顾慈", age: "52", from: "临河里", destination: "纸灯巷", ticket: "单程软座", baggage: "漆木首饰盒", quote: "里面有一块表，但它在我女儿离开那天就停了。", monogram: "顾", color: "#8c735c", isAnomaly: false,
+      violation: "盒中怀表已经停走，来处和目的地也均有效。", farewell: "她没有打开首饰盒，只把它更稳地抱在怀里。",
+      findings: {
+        ticket: { label: "车票", text: "临河里至纸灯巷，路线和日期均有效。", tone: "safe" },
+        mirror: { label: "银镜", text: "人、首饰盒与座椅都有完整倒影。", tone: "safe" },
+        question: { label: "问询", text: "能说出临河里站台今晚积水的位置。", tone: "safe" },
+        pulse: { label: "心跳", text: "每分钟 69 次，规律。", tone: "safe" },
+        bag: { label: "行李", text: "怀表停在 18:42，表冠已被取下，无法继续走动。", tone: "safe" },
+      },
+    },
+    {
+      id: "mister-bai", number: "0719-06", name: "白先生", age: "不详", from: "终点之后", destination: "终雾站", ticket: "返程票", baggage: "无", quote: "站名？你们把它从地图上擦掉以后，我也忘了。", monogram: "白", color: "#746e7a", isAnomaly: true,
+      violation: "无法说出真实上车站名，违反本夜第八条规则。", farewell: "他摘下帽子，里面盛着一小片仍在下雨的站台。",
+      findings: {
+        ticket: { label: "车票", text: "返程票的始发站被整齐挖去，只剩一个孔洞。", tone: "warning" },
+        mirror: { label: "银镜", text: "镜中他背后排列着十三扇关闭的车门。", tone: "warning" },
+        question: { label: "问询", text: "无法说出站名，只重复：‘终点之后的第一站。’", tone: "strange" },
+        pulse: { label: "心跳", text: "每分钟 61 次，听起来像隔着很长的隧道。", tone: "warning" },
+        bag: { label: "行李", text: "没有行李，衣袋里只有一撮站台上的黑砂。", tone: "safe" },
+      },
+    },
+  ],
+];
+
+const ALL_PASSENGERS = NIGHTS.flatMap((night, index) => [...night.passengers, ...EXTRA_PASSENGERS[index]]);
+
+function shuffle<T>(items: T[]): T[] {
+  const next = [...items];
+  for (let index = next.length - 1; index > 0; index -= 1) {
+    const target = Math.floor(Math.random() * (index + 1));
+    [next[index], next[target]] = [next[target], next[index]];
+  }
+  return next;
+}
+
+function createRunRosters(): Passenger[][] {
+  return NIGHTS.map((night, index) => {
+    const pool = [...night.passengers, ...EXTRA_PASSENGERS[index]];
+    const ordinary = shuffle(pool.filter((item) => !item.isAnomaly)).slice(0, 2);
+    const anomalies = shuffle(pool.filter((item) => item.isAnomaly)).slice(0, 2);
+    return shuffle([...ordinary, ...anomalies]);
+  });
+}
+
 function playTone(kind: "tap" | "good" | "bad", enabled: boolean) {
   if (!enabled || typeof window === "undefined") return;
   const AudioCtx = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
@@ -270,6 +386,8 @@ function playTone(kind: "tap" | "good" | "bad", enabled: boolean) {
 
 export default function Home() {
   const [phase, setPhase] = useState<Phase>("title");
+  const [contractId, setContractId] = useState<ContractId>("standard");
+  const [runRosters, setRunRosters] = useState<Passenger[][]>(() => NIGHTS.map((night) => night.passengers));
   const [nightIndex, setNightIndex] = useState(0);
   const [passengerIndex, setPassengerIndex] = useState(0);
   const [focus, setFocus] = useState(3);
@@ -278,26 +396,36 @@ export default function Home() {
   const [credits, setCredits] = useState(0);
   const [caught, setCaught] = useState(0);
   const [mistakes, setMistakes] = useState(0);
+  const [streak, setStreak] = useState(0);
+  const [runBestStreak, setRunBestStreak] = useState(0);
   const [revealed, setRevealed] = useState<InvestigationKey[]>([]);
   const [result, setResult] = useState<VerdictResult | null>(null);
   const [upgrades, setUpgrades] = useState<UpgradeId[]>([]);
   const [whistleUsed, setWhistleUsed] = useState(false);
   const [bestScore, setBestScore] = useState(0);
   const [runs, setRuns] = useState(0);
+  const [bestStreak, setBestStreak] = useState(0);
+  const [archiveIds, setArchiveIds] = useState<string[]>([]);
   const [soundOn, setSoundOn] = useState(true);
   const [showGuide, setShowGuide] = useState(false);
+  const [showArchive, setShowArchive] = useState(false);
 
   const night = NIGHTS[nightIndex];
-  const passenger = night.passengers[passengerIndex];
-  const maxFocus = upgrades.includes("night-tea") ? 4 : 3;
-  const maxTrust = upgrades.includes("red-thread") ? 4 : 3;
-  const score = Math.max(0, credits + caught * 20 + trust * 10 - contamination * 15 - mistakes * 5);
+  const contract = CONTRACTS.find((item) => item.id === contractId) ?? CONTRACTS[0];
+  const activePassengers = runRosters[nightIndex] ?? night.passengers;
+  const passenger = activePassengers[passengerIndex];
+  const maxFocus = contract.focus + (upgrades.includes("night-tea") ? 1 : 0);
+  const maxTrust = contract.trust + (upgrades.includes("red-thread") ? 1 : 0);
+  const rawScore = Math.max(0, credits + caught * 20 + trust * 10 - contamination * 15 - mistakes * 5);
+  const score = Math.floor(rawScore * contract.multiplier);
 
   useEffect(() => {
     try {
-      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") as { bestScore?: number; runs?: number; soundOn?: boolean };
+      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") as { bestScore?: number; runs?: number; bestStreak?: number; archiveIds?: string[]; soundOn?: boolean };
       setBestScore(stored.bestScore || 0);
       setRuns(stored.runs || 0);
+      setBestStreak(stored.bestStreak || 0);
+      setArchiveIds(Array.isArray(stored.archiveIds) ? stored.archiveIds : []);
       if (typeof stored.soundOn === "boolean") setSoundOn(stored.soundOn);
     } catch {
       // A damaged local record should never stop the train.
@@ -308,16 +436,18 @@ export default function Home() {
     if (phase !== "ending") return;
     const nextBest = Math.max(bestScore, score);
     const nextRuns = runs + 1;
+    const nextBestStreak = Math.max(bestStreak, runBestStreak);
     setBestScore(nextBest);
     setRuns(nextRuns);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ bestScore: nextBest, runs: nextRuns, soundOn }));
+    setBestStreak(nextBestStreak);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ bestScore: nextBest, runs: nextRuns, bestStreak: nextBestStreak, archiveIds, soundOn }));
     // Ending is entered once per run; the state reset prevents duplicate writes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ bestScore, runs, soundOn }));
-  }, [soundOn, bestScore, runs]);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ bestScore, runs, bestStreak, archiveIds, soundOn }));
+  }, [soundOn, bestScore, runs, bestStreak, archiveIds]);
 
   const availableUpgrades = useMemo(() => {
     const remaining = UPGRADES.filter((upgrade) => !upgrades.includes(upgrade.id));
@@ -332,14 +462,23 @@ export default function Home() {
 
   const startRun = () => {
     playTone("tap", soundOn);
+    setPhase("contract");
+  };
+
+  const chooseContract = (selected: DutyContract) => {
+    playTone("good", soundOn);
+    setContractId(selected.id);
+    setRunRosters(createRunRosters());
     setNightIndex(0);
     setPassengerIndex(0);
-    setFocus(3);
-    setTrust(3);
-    setContamination(0);
+    setFocus(selected.focus);
+    setTrust(selected.trust);
+    setContamination(selected.contamination);
     setCredits(0);
     setCaught(0);
     setMistakes(0);
+    setStreak(0);
+    setRunBestStreak(0);
     setRevealed([]);
     setResult(null);
     setUpgrades([]);
@@ -375,13 +514,18 @@ export default function Home() {
     let nextTrust = trust;
     let nextContamination = contamination;
     let reward = 0;
+    let nextStreak = 0;
 
     if (correct) {
-      reward = 12 + (upgrades.includes("old-ledger") ? 5 : 0);
+      nextStreak = streak + 1;
+      setRunBestStreak((value) => Math.max(value, nextStreak));
+      reward = 12 + Math.min(nextStreak - 1, 4) * 3 + (upgrades.includes("old-ledger") ? 5 : 0);
+      setStreak(nextStreak);
       setCredits((value) => value + reward);
       if (passenger.isAnomaly) setCaught((value) => value + 1);
       playTone("good", soundOn);
     } else {
+      setStreak(0);
       setMistakes((value) => value + 1);
       if (passenger.isAnomaly) {
         if (upgrades.includes("brass-whistle") && !whistleUsed) {
@@ -407,9 +551,10 @@ export default function Home() {
         ? `${passenger.violation} 你放行了它。`
         : `${passenger.violation} 你拒绝了一位符合规定的乘客。`;
 
-    setResult({ correct, decision, passenger, title, explanation, reward, endCause });
+    setArchiveIds((items) => items.includes(passenger.id) ? items : [...items, passenger.id]);
+    setResult({ correct, decision, passenger, title, explanation, reward, streak: nextStreak, endCause });
     setPhase("result");
-  }, [contamination, passenger, phase, soundOn, trust, upgrades, whistleUsed]);
+  }, [contamination, passenger, phase, soundOn, streak, trust, upgrades, whistleUsed]);
 
   const continueAfterResult = () => {
     playTone("tap", soundOn);
@@ -417,7 +562,7 @@ export default function Home() {
       setPhase("ending");
       return;
     }
-    const isLastPassenger = passengerIndex === night.passengers.length - 1;
+    const isLastPassenger = passengerIndex === activePassengers.length - 1;
     if (isLastPassenger) {
       if (nightIndex === NIGHTS.length - 1) setPhase("ending");
       else setPhase("shift-end");
@@ -437,7 +582,7 @@ export default function Home() {
     const nextNight = nightIndex + 1;
     setNightIndex(nextNight);
     setPassengerIndex(0);
-    setFocus(upgrade.id === "night-tea" || upgrades.includes("night-tea") ? 4 : 3);
+    setFocus(contract.focus + (upgrade.id === "night-tea" || upgrades.includes("night-tea") ? 1 : 0));
     setRevealed([]);
     setResult(null);
     setPhase("briefing");
@@ -477,6 +622,7 @@ export default function Home() {
         </button>
         <div className="top-actions">
           {phase !== "title" && <span className="run-score">夜班记录 <b>{score}</b></span>}
+          <button className="icon-button" onClick={() => setShowArchive(true)}>乘客档案</button>
           <button className="icon-button" onClick={() => setShowGuide(true)}>值班手册</button>
           <button className="icon-button sound-button" onClick={() => setSoundOn((value) => !value)} aria-label={soundOn ? "关闭声音" : "开启声音"}>{soundOn ? "声 · 开" : "声 · 关"}</button>
         </div>
@@ -487,15 +633,16 @@ export default function Home() {
           <div className="title-copy">
             <div className="eyebrow"><span /> 规则推理卡牌游戏</div>
             <h1>零点之后，<br /><em>不要放错任何人。</em></h1>
-            <p className="lead">三夜，十二位乘客。检查车票、倒影与心跳，在末班车驶入浓雾前，决定谁能上车。</p>
+            <p className="lead">十八位可能出现的乘客，每次值班随机遇见十二位。检查车票、倒影与心跳，在末班车驶入浓雾前，决定谁能上车。</p>
             <div className="title-buttons">
               <button className="primary-button" onClick={startRun}><span>开始今晚值班</span><b>→</b></button>
-              <button className="secondary-button" onClick={() => setShowGuide(true)}>阅读值班守则</button>
+              <button className="secondary-button" onClick={() => setShowArchive(true)}>查看本机档案</button>
             </div>
             <div className="record-strip">
               <div><small>历史最高</small><strong>{bestScore || "—"}</strong></div>
               <div><small>完成夜班</small><strong>{runs}</strong></div>
-              <div><small>单局时长</small><strong>10–15 分</strong></div>
+              <div><small>最佳连判</small><strong>{bestStreak || "—"}</strong></div>
+              <div><small>档案收录</small><strong>{archiveIds.length} / {ALL_PASSENGERS.length}</strong></div>
             </div>
           </div>
           <div className="title-art" aria-label="一张等待查验的神秘乘客卡">
@@ -516,6 +663,30 @@ export default function Home() {
         </section>
       )}
 
+      {phase === "contract" && (
+        <section className="contract-screen content-screen">
+          <div className="upgrade-heading">
+            <span className="section-kicker">终雾线 · 夜班调度室</span>
+            <h1>签署值班契约</h1>
+            <p>难度越高，可用于调查的余地越少，但最终记录也会获得更高倍率。</p>
+          </div>
+          <div className="contract-grid">
+            {CONTRACTS.map((item) => (
+              <button className={`contract-card ${item.id === "standard" ? "recommended" : ""}`} key={item.id} onClick={() => chooseContract(item)}>
+                {item.id === "standard" && <span className="recommended-label">推荐</span>}
+                <b className="contract-mark">{item.mark}</b>
+                <small>{item.subtitle}</small>
+                <h2>{item.name}</h2>
+                <p>{item.description}</p>
+                <div className="contract-stats"><span>专注 <b>{item.focus}</b></span><span>信誉 <b>{item.trust}</b></span><span>记录 <b>×{item.multiplier.toFixed(1)}</b></span></div>
+                <span className="choose-label">签署此契约 <b>→</b></span>
+              </button>
+            ))}
+          </div>
+          <button className="text-button contract-back" onClick={() => setPhase("title")}>返回值班大厅</button>
+        </section>
+      )}
+
       {phase === "briefing" && (
         <section className="briefing-screen content-screen">
           <div className="briefing-heading">
@@ -524,7 +695,7 @@ export default function Home() {
               <h1>{night.label}</h1>
               <p>{night.subtitle}</p>
             </div>
-            <div className="weather-card"><small>站台情况</small><strong>{night.weather}</strong><span>预计乘客 {night.passengers.length} 人</span></div>
+            <div className="weather-card"><small>{contract.name} · 记录 ×{contract.multiplier.toFixed(1)}</small><strong>{night.weather}</strong><span>本夜随机编组 {activePassengers.length} 人</span></div>
           </div>
           <div className="rules-board">
             <div className="board-title"><span>本夜临时乘车规则</span><small>规则每晚更换，请勿沿用昨日经验</small></div>
@@ -549,8 +720,8 @@ export default function Home() {
           <div className="shift-status">
             <div className="night-progress">
               <span>{night.label} · {night.time}</span>
-              <div className="progress-dots">{night.passengers.map((item, index) => <i key={item.id} className={index < passengerIndex ? "done" : index === passengerIndex ? "current" : ""} />)}</div>
-              <small>第 {passengerIndex + 1} / {night.passengers.length} 位</small>
+              <div className="progress-dots">{activePassengers.map((item, index) => <i key={item.id} className={index < passengerIndex ? "done" : index === passengerIndex ? "current" : ""} />)}</div>
+              <small>第 {passengerIndex + 1} / {activePassengers.length} 位</small>
             </div>
             <div className="status-meters">
               <div><span>公众信誉</span><b className="trust-pips">{Array.from({ length: maxTrust }, (_, index) => <i key={index} className={index < trust ? "filled" : ""}>◆</i>)}</b></div>
@@ -595,7 +766,7 @@ export default function Home() {
                 <button className="allow-button" onClick={() => makeVerdict("allow")} disabled={phase === "result"}><span>准予乘车</span><small>A 键</small></button>
                 <button className="deny-button" onClick={() => makeVerdict("deny")} disabled={phase === "result"}><span>拒绝上车</span><small>D 键</small></button>
               </div>
-              <div className="salary-box"><span>本夜津贴</span><strong>¥ {credits}</strong><small>连续正确判断可提高最终记录</small></div>
+              <div className="salary-box"><span>本夜津贴 · 连判 {streak}</span><strong>¥ {credits}</strong><small>{streak >= 2 ? `连判奖励已提高至 +${Math.min(streak - 1, 4) * 3}` : "连续正确判断可提高每次津贴"}</small></div>
             </aside>
           </div>
 
@@ -620,9 +791,9 @@ export default function Home() {
                 <p>{result.explanation}</p>
                 <blockquote>{result.passenger.farewell}</blockquote>
                 <div className="result-impact">
-                  {result.correct ? <span className="positive">夜班津贴 +{result.reward}</span> : result.passenger.isAnomaly ? <span className="negative">车厢污染上升</span> : <span className="negative">公众信誉下降</span>}
+                  {result.correct ? <span className="positive">连判 {result.streak} · 夜班津贴 +{result.reward}</span> : result.passenger.isAnomaly ? <span className="negative">连判中断 · 车厢污染上升</span> : <span className="negative">连判中断 · 公众信誉下降</span>}
                 </div>
-                <button className="primary-button centered" onClick={continueAfterResult}><span>{result.endCause ? "查看夜班结局" : passengerIndex === night.passengers.length - 1 ? "结束本夜检票" : "呼叫下一位乘客"}</span><b>→</b></button>
+                <button className="primary-button centered" onClick={continueAfterResult}><span>{result.endCause ? "查看夜班结局" : passengerIndex === activePassengers.length - 1 ? "结束本夜检票" : "呼叫下一位乘客"}</span><b>→</b></button>
               </div>
             </div>
           )}
@@ -651,11 +822,36 @@ export default function Home() {
             <h1>{ending.title}</h1>
             <p>{ending.body}</p>
             <div className="final-score"><small>本次夜班记录</small><strong>{score}</strong><span>{score >= bestScore ? "本机最佳记录" : `历史最佳 ${bestScore}`}</span></div>
-            <div className="ending-stats"><div><small>拦截异常</small><b>{caught} / 6</b></div><div><small>判断失误</small><b>{mistakes}</b></div><div><small>夜班津贴</small><b>¥ {credits}</b></div></div>
+            <div className="ending-stats"><div><small>拦截异常</small><b>{caught} / 6</b></div><div><small>最佳连判</small><b>{runBestStreak}</b></div><div><small>{contract.name}倍率</small><b>×{contract.multiplier.toFixed(1)}</b></div></div>
             <button className="primary-button centered" onClick={startRun}><span>重新开始一班</span><b>↻</b></button>
             <button className="text-button" onClick={() => setPhase("title")}>返回标题画面</button>
           </div>
         </section>
+      )}
+
+      {showArchive && (
+        <div className="guide-overlay" role="dialog" aria-modal="true" aria-label="乘客档案">
+          <div className="archive-book">
+            <button className="close-button" onClick={() => setShowArchive(false)} aria-label="关闭乘客档案">×</button>
+            <div className="archive-heading">
+              <div><span className="section-kicker">终雾线 · 本机调查记录</span><h2>乘客档案</h2><p>完成一次处置即可收录人物真相。每夜会从六位候选者中随机出现四位。</p></div>
+              <div className="archive-count"><strong>{archiveIds.length}</strong><span>/ {ALL_PASSENGERS.length}<small>已收录</small></span></div>
+            </div>
+            <div className="archive-grid">
+              {ALL_PASSENGERS.map((item, index) => {
+                const unlocked = archiveIds.includes(item.id);
+                return <article className={`archive-card ${unlocked ? "unlocked" : "locked"}`} key={item.id} style={{ "--passenger-color": item.color } as React.CSSProperties}>
+                  <div className="archive-number">{String(index + 1).padStart(2, "0")}</div>
+                  <div className="archive-monogram">{unlocked ? item.monogram : "?"}</div>
+                  <small>{unlocked ? (item.isAnomaly ? "异常档案" : "普通乘客") : "尚未登记"}</small>
+                  <h3>{unlocked ? item.name : "未知乘客"}</h3>
+                  {unlocked ? <><p>{item.from} → {item.destination}</p><span>{item.violation}</span></> : <p>继续值班以发现此人</p>}
+                </article>;
+              })}
+            </div>
+            <p className="archive-note">档案仅保存在当前浏览器中，不包含账号或个人信息。</p>
+          </div>
+        </div>
       )}
 
       {showGuide && (
@@ -666,9 +862,10 @@ export default function Home() {
             <h2>值班手册</h2>
             <div className="guide-steps">
               <div><b>01</b><p><strong>先读本夜规则</strong><span>规则每夜更换，上一夜的禁令可能不再有效。</span></p></div>
-              <div><b>02</b><p><strong>使用行动牌调查</strong><span>每位乘客只有 3 点专注。可疑信息并不一定构成违规。</span></p></div>
+              <div><b>02</b><p><strong>使用行动牌调查</strong><span>专注点数由值班契约决定。可疑信息并不一定构成违规。</span></p></div>
               <div><b>03</b><p><strong>作出最终处置</strong><span>放行异常会增加污染；误拒普通乘客会损失信誉。</span></p></div>
               <div><b>04</b><p><strong>保住这趟列车</strong><span>信誉归零或污染达到 3 点，夜班将提前结束。</span></p></div>
+              <div><b>05</b><p><strong>维持连续判断</strong><span>连续正确会逐步提高夜班津贴，失误将令连判归零。</span></p></div>
             </div>
             <div className="shortcut-line"><span>键盘快捷键</span><b>1–5 调查</b><b>A 放行</b><b>D 拒载</b></div>
             <button className="primary-button centered" onClick={() => setShowGuide(false)}><span>合上手册</span><b>✓</b></button>

@@ -23,5 +23,7 @@ test("renders the complete game shell", async () => {
   assert.match(html, /零点之后/);
   assert.match(html, /开始今晚值班/);
   assert.match(html, /值班手册/);
+  assert.match(html, /乘客档案/);
+  assert.match(html, /十八位可能出现的乘客/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/i);
 });
