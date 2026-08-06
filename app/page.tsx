@@ -75,6 +75,7 @@ type Upgrade = {
 };
 
 const STORAGE_KEY = "last-train-thirteen-station-v1";
+const ASSET_PREFIX = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
 const ACTIONS: Record<InvestigationKey, { mark: string; name: string; cost: number; hint: string }> = {
   ticket: { mark: "▣", name: "核验车票", cost: 1, hint: "日期、油墨与换乘章" },
@@ -296,6 +297,28 @@ const EXTRA_PASSENGERS: Passenger[][] = [
         bag: { label: "行李", text: "文件袋中全是日期为明天的收据。", tone: "warning" },
       },
     },
+    {
+      id: "tang-gui", number: "0717-07", name: "唐圭", age: "17", from: "市立夜校", destination: "纸灯巷", ticket: "学生月票", baggage: "帆布画夹", quote: "老师留堂改画。我赶得上宿舍关门，对吧？", monogram: "唐", color: "#6d8490", isAnomaly: false,
+      violation: "学生月票已完成 7 月 17 日签注，银镜倒影正常。", farewell: "少年抱着画夹坐到窗边，偷偷补完了最后一笔。",
+      findings: {
+        ticket: { label: "车票", text: "7 月 17 日夜校专用签注，钢印清晰。", tone: "safe" },
+        mirror: { label: "银镜", text: "倒影完整，右侧镜片上有相同裂纹。", tone: "safe" },
+        question: { label: "问询", text: "能说出夜校门房今晚播放的老唱片。", tone: "safe" },
+        pulse: { label: "心跳", text: "每分钟 91 次，跑来车站后尚未平复。", tone: "safe" },
+        bag: { label: "行李", text: "画夹中是雨夜站台的炭笔速写。", tone: "safe" },
+      },
+    },
+    {
+      id: "wen-que", number: "0717-08", name: "闻雀", age: "32", from: "标本馆", destination: "终雾站", ticket: "单程软座", baggage: "细长木匣", quote: "镜子里没有我，也许只是因为灯光太暗。", monogram: "闻", color: "#7c6d62", isAnomaly: true,
+      violation: "银镜中没有倒影，违反本夜第二条规则。", farewell: "木匣里传出轻微振翅声，站台上却落满灰色羽毛。",
+      findings: {
+        ticket: { label: "车票", text: "7 月 17 日签发，票面与钢印均有效。", tone: "safe" },
+        mirror: { label: "银镜", text: "镜中只剩木匣悬在半空，乘客位置完全空白。", tone: "strange" },
+        question: { label: "问询", text: "坚持自己在标本馆里‘醒来’，而不是下班。", tone: "warning" },
+        pulse: { label: "心跳", text: "每分钟 120 次，轻而急，像小型鸟类。", tone: "warning" },
+        bag: { label: "行李", text: "木匣上有透气孔，内部不断移动却拒绝开启。", tone: "warning" },
+      },
+    },
   ],
   [
     {
@@ -320,6 +343,28 @@ const EXTRA_PASSENGERS: Passenger[][] = [
         bag: { label: "行李", text: "收音机没有电池，仍在播放十三号站的到站广播。", tone: "warning" },
       },
     },
+    {
+      id: "xu-nian", number: "0718-07", name: "许念", age: "47", from: "山茶花店", destination: "临河里", ticket: "换乘票", baggage: "红伞与花篮", quote: "这是给明早婚礼的花，可不能让雾碰坏了。", monogram: "许", color: "#9a7165", isAnomaly: false,
+      violation: "红伞乘客持有有效的蓝色三角换乘章。", farewell: "她用红伞护着花篮，车厢里多了一点山茶香。",
+      findings: {
+        ticket: { label: "车票", text: "蓝色三角换乘章清晰，编号与花店团体票一致。", tone: "safe" },
+        mirror: { label: "银镜", text: "倒影、红伞和花篮均正常。", tone: "safe" },
+        question: { label: "问询", text: "说得出换乘处今夜临时关闭的第二个窗口。", tone: "safe" },
+        pulse: { label: "心跳", text: "每分钟 73 次，稳定。", tone: "safe" },
+        bag: { label: "行李", text: "白色山茶、红伞和一张婚礼订单。", tone: "safe" },
+      },
+    },
+    {
+      id: "he-zhong", number: "0718-08", name: "贺钟", age: "50", from: "票据印刷厂", destination: "终雾站", ticket: "职工月票", baggage: "铅字盒", quote: "有些车票还没印出来，就已经有人拿着它上车。", monogram: "贺", color: "#706f82", isAnomaly: true,
+      violation: "胸腔内传出印刷机压纸声，并非人类心跳。", farewell: "铅字盒自行排出一行字：下一位是你。",
+      findings: {
+        ticket: { label: "车票", text: "职工月票有效，但编号来自尚未启用的下一批次。", tone: "warning" },
+        mirror: { label: "银镜", text: "倒影完整，胸口位置却像纸张般反复折叠。", tone: "warning" },
+        question: { label: "问询", text: "能回答工厂信息，却把所有日期都说成印刷批次。", tone: "warning" },
+        pulse: { label: "心跳", text: "咔哒、压纸、回墨。每十秒完成一次印刷循环。", tone: "strange" },
+        bag: { label: "行李", text: "铅字盒里缺少‘人’字，却多出十三枚‘站’字。", tone: "warning" },
+      },
+    },
   ],
   [
     {
@@ -342,6 +387,28 @@ const EXTRA_PASSENGERS: Passenger[][] = [
         question: { label: "问询", text: "无法说出站名，只重复：‘终点之后的第一站。’", tone: "strange" },
         pulse: { label: "心跳", text: "每分钟 61 次，听起来像隔着很长的隧道。", tone: "warning" },
         bag: { label: "行李", text: "没有行李，衣袋里只有一撮站台上的黑砂。", tone: "safe" },
+      },
+    },
+    {
+      id: "li-an", number: "0719-07", name: "黎岸", age: "30", from: "东岔信号所", destination: "终雾站", ticket: "铁路职工证", baggage: "信号灯工具箱", quote: "废线的绿灯亮了三次。我得去终点把它关掉。", monogram: "黎", color: "#657c6f", isAnomaly: false,
+      violation: "能够确认真实来处，目的地和工具箱均符合本夜规则。", farewell: "他拎起工具箱，制服袖口闪过一小点绿色信号光。",
+      findings: {
+        ticket: { label: "车票", text: "铁路信号工证件有效，夜间抢修单齐全。", tone: "safe" },
+        mirror: { label: "银镜", text: "倒影正常，制服编号与证件一致。", tone: "safe" },
+        question: { label: "问询", text: "准确说出东岔信号所的闭塞机编号。", tone: "safe" },
+        pulse: { label: "心跳", text: "每分钟 80 次，稳定。", tone: "safe" },
+        bag: { label: "行李", text: "绝缘手套、停电检测器与一盏熄灭的信号灯。", tone: "safe" },
+      },
+    },
+    {
+      id: "luo-du", number: "0719-08", name: "罗渡", age: "20", from: "旧渡口", destination: "渡口站", ticket: "水渍船票", baggage: "缆绳圈", quote: "车也好，船也好，只要能过河，终点叫什么不重要。", monogram: "罗", color: "#5f7680", isAnomaly: true,
+      violation: "目的地‘渡口站’不在有效线路中，违反本夜第六条规则。", farewell: "他转身时，鞋底留下的不是水，而是一串细小河蚌。",
+      findings: {
+        ticket: { label: "车票", text: "这不是铁路车票，而是一张二十年前的夜渡船票。", tone: "strange" },
+        mirror: { label: "银镜", text: "倒影站在齐腰深的河水里，身后没有列车。", tone: "warning" },
+        question: { label: "问询", text: "坚持自己从旧渡口上车，并称下一站为‘对岸’。", tone: "warning" },
+        pulse: { label: "心跳", text: "每分钟 68 次，伴有持续的水流回声。", tone: "warning" },
+        bag: { label: "行李", text: "缆绳不断渗水，绳结中夹着新鲜河草。", tone: "warning" },
       },
     },
   ],
@@ -422,6 +489,8 @@ export default function Home() {
   useEffect(() => {
     try {
       const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") as { bestScore?: number; runs?: number; bestStreak?: number; archiveIds?: string[]; soundOn?: boolean };
+      // Hydration has to happen after mount because the archive lives in browser-only storage.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setBestScore(stored.bestScore || 0);
       setRuns(stored.runs || 0);
       setBestStreak(stored.bestStreak || 0);
@@ -437,6 +506,8 @@ export default function Home() {
     const nextBest = Math.max(bestScore, score);
     const nextRuns = runs + 1;
     const nextBestStreak = Math.max(bestStreak, runBestStreak);
+    // The ending transition is the single persistence checkpoint for a completed run.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setBestScore(nextBest);
     setRuns(nextRuns);
     setBestStreak(nextBestStreak);
@@ -633,7 +704,7 @@ export default function Home() {
           <div className="title-copy">
             <div className="eyebrow"><span /> 规则推理卡牌游戏</div>
             <h1>零点之后，<br /><em>不要放错任何人。</em></h1>
-            <p className="lead">十八位可能出现的乘客，每次值班随机遇见十二位。检查车票、倒影与心跳，在末班车驶入浓雾前，决定谁能上车。</p>
+            <p className="lead">二十四位可能出现的乘客，每次值班随机遇见十二位。检查车票、倒影与心跳，在末班车驶入浓雾前，决定谁能上车。</p>
             <div className="title-buttons">
               <button className="primary-button" onClick={startRun}><span>开始今晚值班</span><b>→</b></button>
               <button className="secondary-button" onClick={() => setShowArchive(true)}>查看本机档案</button>
@@ -742,7 +813,11 @@ export default function Home() {
                 <span>夜行乘车证</span><b>NO. {passenger.number}</b>
               </div>
               <div className="identity-row">
-                <div className="portrait-block"><div className="portrait-halo" /><span>{passenger.monogram}</span><small>临时照片</small></div>
+                <div className="portrait-block">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={`${ASSET_PREFIX}/passengers/${passenger.id}.jpg`} alt={`${passenger.name}的乘车档案照`} />
+                  <small>临时照片</small>
+                </div>
                 <div className="identity-copy"><small>乘客姓名 / 年龄</small><h2>{passenger.name}</h2><p>{passenger.age} 岁 · 自称普通乘客</p><div className="signature">{passenger.quote}</div></div>
               </div>
               <div className="route-block">
@@ -834,7 +909,7 @@ export default function Home() {
           <div className="archive-book">
             <button className="close-button" onClick={() => setShowArchive(false)} aria-label="关闭乘客档案">×</button>
             <div className="archive-heading">
-              <div><span className="section-kicker">终雾线 · 本机调查记录</span><h2>乘客档案</h2><p>完成一次处置即可收录人物真相。每夜会从六位候选者中随机出现四位。</p></div>
+              <div><span className="section-kicker">终雾线 · 本机调查记录</span><h2>乘客档案</h2><p>完成一次处置即可收录人物真相。每夜会从八位候选者中随机出现四位。</p></div>
               <div className="archive-count"><strong>{archiveIds.length}</strong><span>/ {ALL_PASSENGERS.length}<small>已收录</small></span></div>
             </div>
             <div className="archive-grid">
@@ -842,7 +917,10 @@ export default function Home() {
                 const unlocked = archiveIds.includes(item.id);
                 return <article className={`archive-card ${unlocked ? "unlocked" : "locked"}`} key={item.id} style={{ "--passenger-color": item.color } as React.CSSProperties}>
                   <div className="archive-number">{String(index + 1).padStart(2, "0")}</div>
-                  <div className="archive-monogram">{unlocked ? item.monogram : "?"}</div>
+                  <div className="archive-monogram">{unlocked ? <>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={`${ASSET_PREFIX}/passengers/${item.id}.jpg`} alt={`${item.name}的档案照`} />
+                  </> : "?"}</div>
                   <small>{unlocked ? (item.isAnomaly ? "异常档案" : "普通乘客") : "尚未登记"}</small>
                   <h3>{unlocked ? item.name : "未知乘客"}</h3>
                   {unlocked ? <><p>{item.from} → {item.destination}</p><span>{item.violation}</span></> : <p>继续值班以发现此人</p>}
