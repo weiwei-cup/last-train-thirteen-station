@@ -54,6 +54,10 @@ type VerdictResult = {
   storyAdvanced: boolean;
   tacticReward: number;
   eliteBonus: number;
+  reviewBonus: number;
+  shouldDeny: boolean;
+  gateHit: boolean;
+  penalty?: "trust" | "contamination";
   endCause?: "trust" | "contamination";
 };
 
@@ -134,6 +138,24 @@ type StoryLink = StoryPattern & {
   targetId: string;
 };
 
+type GateOrder = {
+  id: string;
+  mark: string;
+  title: string;
+  detail: string;
+  hit: boolean;
+  hitText: string;
+  clearText: string;
+};
+
+type ReviewTier = {
+  id: "routine" | "focused" | "red";
+  mark: string;
+  name: string;
+  minRecords: number;
+  bonus: number;
+};
+
 type VerdictDecision = "allow" | "deny";
 
 type StoredRecord = {
@@ -147,6 +169,7 @@ type StoredRecord = {
 
 const STORAGE_KEY = "last-train-thirteen-station-v1";
 const ASSET_PREFIX = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+const MAX_CONTAMINATION = 4;
 
 const ACTIONS: Record<InvestigationKey, { mark: string; name: string; cost: number; hint: string }> = {
   ticket: { mark: "▣", name: "核验车票", cost: 1, hint: "日期、油墨与换乘章" },
@@ -176,10 +199,26 @@ const UPGRADES: Upgrade[] = [
 ];
 
 const CONTRACTS: DutyContract[] = [
-  { id: "standard", mark: "○", name: "常规值班", subtitle: "第一次游玩推荐", description: "每位乘客 3 点专注，3 点公众信誉。没有额外惩罚。", focus: 3, trust: 3, contamination: 0, multiplier: 1 },
+  { id: "standard", mark: "○", name: "常规值班", subtitle: "第一次游玩推荐", description: "每位乘客 3 点专注，4 点公众信誉。适合熟悉长班次。", focus: 3, trust: 4, contamination: 0, multiplier: 1 },
   { id: "blackout", mark: "◒", name: "熄灯巡查", subtitle: "信息取舍更加严格", description: "每位乘客只有 2 点专注，但最终记录提高 40%。", focus: 2, trust: 3, contamination: 0, multiplier: 1.4 },
-  { id: "fogline", mark: "≈", name: "雾线直达", subtitle: "资深检票员试炼", description: "以 2 点信誉和 1 点污染开始，最终记录提高 70%。", focus: 3, trust: 2, contamination: 1, multiplier: 1.7 },
+  { id: "fogline", mark: "≈", name: "雾线直达", subtitle: "资深检票员试炼", description: "以 3 点信誉和 1 点污染开始，最终记录提高 70%。", focus: 3, trust: 3, contamination: 1, multiplier: 1.7 },
 ];
+
+const REVIEW_TIERS: ReviewTier[] = [
+  { id: "routine", mark: "例", name: "例行查验", minRecords: 1, bonus: 0 },
+  { id: "focused", mark: "重", name: "重点复核", minRecords: 2, bonus: 3 },
+  { id: "red", mark: "红", name: "红色终审", minRecords: 3, bonus: 6 },
+];
+
+const FALLBACK_GATE_ORDER: GateOrder = {
+  id: "fallback",
+  mark: "令",
+  title: "临时放行",
+  detail: "本位没有附加闸机限制。",
+  hit: false,
+  hitText: "本位没有附加闸机限制。",
+  clearText: "本位没有附加闸机限制。",
+};
 
 const ROUTE_INCIDENTS: RouteIncident[] = [
   { id: "fogged-mirror", mark: "雾", title: "银镜结雾", description: "车厢温差让镜面反复蒙雾，辨认倒影需要更久。", effect: "照见倒影 +1 专注", action: "mirror", costDelta: 1 },
@@ -539,19 +578,18 @@ function shuffle<T>(items: T[]): T[] {
   return next;
 }
 
-function choosePassengerPair(group: Passenger[], recentIds: Set<string>): Passenger[] {
+function choosePassengerSet(group: Passenger[], recentIds: Set<string>, count: number): Passenger[] {
   const fresh = shuffle(group.filter((item) => !recentIds.has(item.id)));
-  const first = fresh[0] ?? shuffle(group)[0];
-  const remaining = group.filter((item) => item.id !== first.id);
-  return [first, shuffle(remaining)[0]];
+  const repeated = shuffle(group.filter((item) => recentIds.has(item.id)));
+  return [...fresh, ...repeated].slice(0, count);
 }
 
 function createRunRosters(previousRosters: string[][] = []): Passenger[][] {
   return NIGHTS.map((night, index) => {
     const pool = [...night.passengers, ...EXTRA_PASSENGERS[index]];
     const recentIds = new Set(previousRosters[index] ?? []);
-    const ordinary = choosePassengerPair(pool.filter((item) => !item.isAnomaly), recentIds);
-    const anomalies = choosePassengerPair(pool.filter((item) => item.isAnomaly), recentIds);
+    const ordinary = choosePassengerSet(pool.filter((item) => !item.isAnomaly), recentIds, 3);
+    const anomalies = choosePassengerSet(pool.filter((item) => item.isAnomaly), recentIds, 3);
     return shuffle([...ordinary, ...anomalies]);
   });
 }
@@ -575,6 +613,94 @@ function createRunStoryLinks(rosters: Passenger[][]): StoryLink[] {
     triggerId: roster[0].id,
     targetId: roster[roster.length - 1].id,
   }));
+}
+
+function passengerAge(passenger: Passenger): number | null {
+  const parsed = Number.parseInt(passenger.age, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function chooseGateValue<T>(current: T | null, options: T[]): T {
+  const pool = [...new Set(options)];
+  if (current !== null && Math.random() < 0.52) return current;
+  return shuffle(pool)[0] ?? current!;
+}
+
+function ticketFamily(ticket: string): string {
+  return ["月票", "单程", "换乘", "职工", "儿童", "返程"].find((token) => ticket.includes(token)) ?? "临时票";
+}
+
+function baggageFamily(baggage: string): string | null {
+  if (baggage.includes("伞")) return "伞具";
+  if (/[箱盒匣]/.test(baggage)) return "箱盒";
+  if (/[花菊]/.test(baggage)) return "花束";
+  if (/[工具钳]/.test(baggage)) return "工具";
+  return null;
+}
+
+function baggageMatches(baggage: string, family: string): boolean {
+  if (family === "伞具") return baggage.includes("伞");
+  if (family === "箱盒") return /[箱盒匣]/.test(baggage);
+  if (family === "花束") return /[花菊]/.test(baggage);
+  return /[工具钳]/.test(baggage);
+}
+
+function createGateOrder(passenger: Passenger, roster: Passenger[], kind: number): GateOrder {
+  if (kind === 0) {
+    const digit = Number.parseInt(passenger.number.at(-1) ?? "0", 10);
+    const parity = chooseGateValue(digit % 2 === 0 ? "偶数" : "奇数", ["奇数", "偶数"]);
+    const hit = parity === "偶数" ? digit % 2 === 0 : digit % 2 !== 0;
+    return { id: `serial-parity-${parity}`, mark: "号", title: "票号分流", detail: `本位暂停受理票号末位为${parity}的旅客。`, hit, hitText: `票号 ${passenger.number} 的末位命中${parity}分流。`, clearText: `票号 ${passenger.number} 未命中${parity}分流。` };
+  }
+  if (kind === 1) {
+    const family = chooseGateValue(ticketFamily(passenger.ticket), ["月票", "单程", "换乘", "职工", "儿童", "返程"]);
+    const hit = passenger.ticket.includes(family);
+    return { id: `ticket-${family}`, mark: "票", title: "票种暂停", detail: `本位暂停受理所有“${family}”类车票。`, hit, hitText: `票种“${passenger.ticket}”命中${family}类暂停令。`, clearText: `票种“${passenger.ticket}”不属于${family}类。` };
+  }
+  if (kind === 2) {
+    const destination = chooseGateValue(passenger.destination, roster.map((item) => item.destination));
+    const hit = passenger.destination === destination;
+    return { id: `destination-${destination}`, mark: "终", title: "终点封控", detail: `本位暂停受理目的地为“${destination}”的旅客。`, hit, hitText: `目的地“${passenger.destination}”命中终点封控。`, clearText: `目的地“${passenger.destination}”未命中“${destination}”封控。` };
+  }
+  if (kind === 3) {
+    const origin = chooseGateValue(passenger.from, roster.map((item) => item.from));
+    const hit = passenger.from === origin;
+    return { id: `origin-${origin}`, mark: "始", title: "来处复查", detail: `本位暂停受理自“${origin}”上车的旅客。`, hit, hitText: `上车地点“${passenger.from}”命中来处复查。`, clearText: `上车地点“${passenger.from}”不在“${origin}”复查范围。` };
+  }
+  if (kind === 4) {
+    const current = baggageFamily(passenger.baggage);
+    const family = chooseGateValue(current, ["伞具", "箱盒", "花束", "工具"]);
+    const hit = baggageMatches(passenger.baggage, family);
+    return { id: `baggage-${family}`, mark: "物", title: "行李抽检", detail: `本位携带${family}者一律转入人工复核并拒载。`, hit, hitText: `申报行李“${passenger.baggage}”命中${family}抽检。`, clearText: `申报行李“${passenger.baggage}”不属于${family}。` };
+  }
+  if (kind === 5) {
+    const age = passengerAge(passenger);
+    const band = chooseGateValue(age !== null && age < 30 ? "未满30岁" : age !== null && age >= 45 ? "45岁以上" : null, ["未满30岁", "45岁以上"]);
+    const hit = age !== null && (band === "未满30岁" ? age < 30 : age >= 45);
+    return { id: `age-${band}`, mark: "龄", title: "年龄分流", detail: `本位${band}旅客暂停通行；年龄不详者不触发此令。`, hit, hitText: `登记年龄 ${passenger.age} 岁命中${band}分流。`, clearText: `登记年龄“${passenger.age}”未命中${band}分流。` };
+  }
+  if (kind === 6) {
+    const digit = Number.parseInt(passenger.number.at(-1) ?? "0", 10);
+    const band = chooseGateValue(digit <= 4 ? "0–4" : "5–9", ["0–4", "5–9"]);
+    const hit = band === "0–4" ? digit <= 4 : digit >= 5;
+    return { id: `serial-band-${band}`, mark: "段", title: "号段停发", detail: `本位票号末位落在 ${band} 号段者暂停通行。`, hit, hitText: `票号末位 ${digit} 命中 ${band} 号段。`, clearText: `票号末位 ${digit} 未命中 ${band} 号段。` };
+  }
+  const marker = chooseGateValue(["站", "巷", "里", "堤"].find((token) => passenger.destination.includes(token)) ?? null, ["站", "巷", "里", "堤"]);
+  const hit = passenger.destination.includes(marker);
+  return { id: `route-marker-${marker}`, mark: "路", title: "线路尾字", detail: `本位目的地名称含“${marker}”字者暂停通行。`, hit, hitText: `目的地“${passenger.destination}”含“${marker}”字。`, clearText: `目的地“${passenger.destination}”不含“${marker}”字。` };
+}
+
+function createRunGateOrders(rosters: Passenger[][]): GateOrder[][] {
+  return rosters.map((roster) => {
+    const kinds = shuffle([0, 1, 2, 3, 4, 5, 6, 7]);
+    return roster.map((passenger, index) => createGateOrder(passenger, roster, kinds[index]));
+  });
+}
+
+function getReviewTier(passengerIndex: number, rosterSize: number): ReviewTier {
+  if (passengerIndex >= rosterSize - 2) return REVIEW_TIERS[2];
+  if (passengerIndex >= 2) return REVIEW_TIERS[1];
+  return REVIEW_TIERS[0];
 }
 
 function isInvestigationKey(key: DeckCardKey): key is InvestigationKey {
@@ -674,12 +800,13 @@ export default function Home() {
   const [runDirectives, setRunDirectives] = useState<NightDirective[]>(() => NIGHT_DIRECTIVES.slice(0, NIGHTS.length));
   const [runProtocols, setRunProtocols] = useState<CrossCheckProtocol[]>(() => CROSS_CHECK_PROTOCOLS.slice(0, NIGHTS.length));
   const [runStoryLinks, setRunStoryLinks] = useState<StoryLink[]>(() => NIGHTS.map((night, index) => ({ ...STORY_PATTERNS[index], triggerId: night.passengers[0].id, targetId: night.passengers[night.passengers.length - 1].id })));
+  const [runGateOrders, setRunGateOrders] = useState<GateOrder[][]>(() => NIGHTS.map((night) => night.passengers.map(() => FALLBACK_GATE_ORDER)));
   const [upgradeOffers, setUpgradeOffers] = useState<UpgradeId[][]>(() => [UPGRADES.slice(0, 3).map((item) => item.id), UPGRADES.slice(3, 6).map((item) => item.id)]);
   const [lastRosterIds, setLastRosterIds] = useState<string[][]>([]);
   const [nightIndex, setNightIndex] = useState(0);
   const [passengerIndex, setPassengerIndex] = useState(0);
   const [focus, setFocus] = useState(3);
-  const [trust, setTrust] = useState(3);
+  const [trust, setTrust] = useState(4);
   const [contamination, setContamination] = useState(0);
   const [credits, setCredits] = useState(0);
   const [caught, setCaught] = useState(0);
@@ -734,9 +861,12 @@ export default function Home() {
   const storyDecision = passenger.id === storyLink.targetId ? verdictHistory[storyLink.triggerId] : undefined;
   const storyFinding = storyDecision ? getStoryFinding(storyLink, storyTrigger, storyTarget, storyDecision) : null;
   const isElite = passengerIndex === activePassengers.length - 1;
-  const eliteReady = !isElite || revealed.length >= 2;
   const crossCheckUnlocked = protocol.actions.every((key) => revealed.includes(key));
   const crossCheckFinding = getCrossCheckFinding(protocol, passenger);
+  const gateOrder = runGateOrders[nightIndex]?.[passengerIndex] ?? FALLBACK_GATE_ORDER;
+  const reviewTier = getReviewTier(passengerIndex, activePassengers.length);
+  const reviewRecordCount = revealed.length + (crossCheckUnlocked ? 1 : 0) + (storyFinding ? 1 : 0);
+  const reviewReady = reviewRecordCount >= reviewTier.minRecords;
   const maxFocus = contract.focus + (upgrades.includes("night-tea") ? 1 : 0) + (incident.focusDelta ?? 0);
   const maxTrust = contract.trust + (upgrades.includes("red-thread") ? 1 : 0);
   const rawScore = Math.max(0, credits + caught * 20 + trust * 10 - contamination * 15 - mistakes * 5);
@@ -807,6 +937,7 @@ export default function Home() {
     setRunDirectives(createRunDirectives());
     setRunProtocols(createRunProtocols());
     setRunStoryLinks(createRunStoryLinks(nextRosters));
+    setRunGateOrders(createRunGateOrders(nextRosters));
     setUpgradeOffers(createUpgradeOffers());
     setNightIndex(0);
     setPassengerIndex(0);
@@ -953,23 +1084,26 @@ export default function Home() {
   }, [phase, protocol.actions, revealAction, soundOn]);
 
   const makeVerdict = useCallback((decision: "allow" | "deny") => {
-    if (phase !== "inspection" || verdictLockedRef.current || (isElite && revealedRef.current.length < 2)) return;
+    if (phase !== "inspection" || verdictLockedRef.current || !reviewReady) return;
     verdictLockedRef.current = true;
-    const correct = (decision === "deny") === passenger.isAnomaly;
+    const shouldDeny = passenger.isAnomaly || gateOrder.hit;
+    const correct = (decision === "deny") === shouldDeny;
     const didCrossCheck = protocol.actions.every((key) => revealedRef.current.includes(key));
     const directiveMet = correct && directiveSatisfied(directive, revealedRef.current, focusRef.current, didCrossCheck);
     const directiveReward = directiveMet ? directive.reward : 0;
     const tacticReward = correct && verdictBonusReadyRef.current ? 6 : 0;
     const eliteBonus = correct && isElite ? 8 : 0;
+    const reviewBonus = correct ? reviewTier.bonus : 0;
     let nextTrust = trust;
     let nextContamination = contamination;
     let reward = 0;
     let nextStreak = 0;
+    let penalty: "trust" | "contamination" | undefined;
 
     if (correct) {
       nextStreak = streak + 1;
       setRunBestStreak((value) => Math.max(value, nextStreak));
-      reward = 12 + Math.min(nextStreak - 1, 4) * 3 + (upgrades.includes("old-ledger") ? 5 : 0) + (incident.rewardDelta ?? 0) + directiveReward + tacticReward + eliteBonus;
+      reward = 12 + Math.min(nextStreak - 1, 4) * 3 + (upgrades.includes("old-ledger") ? 5 : 0) + (incident.rewardDelta ?? 0) + directiveReward + tacticReward + eliteBonus + reviewBonus;
       setStreak(nextStreak);
       setCredits((value) => value + reward);
       if (passenger.isAnomaly) setCaught((value) => value + 1);
@@ -978,7 +1112,8 @@ export default function Home() {
     } else {
       setStreak(0);
       setMistakes((value) => value + 1);
-      if (passenger.isAnomaly) {
+      if (passenger.isAnomaly && decision === "allow") {
+        penalty = "contamination";
         if (upgrades.includes("brass-whistle") && !whistleUsed) {
           setWhistleUsed(true);
         } else {
@@ -986,29 +1121,31 @@ export default function Home() {
           setContamination(nextContamination);
         }
       } else {
+        penalty = "trust";
         nextTrust -= 1;
         setTrust(nextTrust);
       }
       playTone("bad", soundOn);
     }
 
-    const endCause = nextTrust <= 0 ? "trust" : nextContamination >= 3 ? "contamination" : undefined;
+    const endCause = nextTrust <= 0 ? "trust" : nextContamination >= MAX_CONTAMINATION ? "contamination" : undefined;
     const title = correct
-      ? passenger.isAnomaly ? "拒载正确" : "准予乘车"
-      : passenger.isAnomaly ? "异常已经上车" : "误拒普通乘客";
+      ? decision === "allow" ? "准予乘车" : passenger.isAnomaly ? "拒载正确" : "闸机令拦截"
+      : decision === "allow" ? passenger.isAnomaly ? "异常已经上车" : "闸机令已被违反" : "误拒普通乘客";
+    const evidence = `${passenger.violation} ${gateOrder.hit ? gateOrder.hitText : gateOrder.clearText}`;
     const explanation = correct
-      ? passenger.violation
-      : passenger.isAnomaly
-        ? `${passenger.violation} 你放行了它。`
-        : `${passenger.violation} 你拒绝了一位符合规定的乘客。`;
+      ? evidence
+      : decision === "allow"
+        ? `${evidence} 你仍然准予了通行。`
+        : `${evidence} 这位乘客并未触发任何拒载条件。`;
 
     const storyAdvanced = passenger.id === storyLink.triggerId;
     if (storyAdvanced) setVerdictHistory((history) => ({ ...history, [passenger.id]: decision }));
 
     setArchiveIds((items) => items.includes(passenger.id) ? items : [...items, passenger.id]);
-    setResult({ correct, decision, passenger, title, explanation, reward, streak: nextStreak, directiveMet, directiveReward, storyAdvanced, tacticReward, eliteBonus, endCause });
+    setResult({ correct, decision, passenger, title, explanation, reward, streak: nextStreak, directiveMet, directiveReward, storyAdvanced, tacticReward, eliteBonus, reviewBonus, shouldDeny, gateHit: gateOrder.hit, penalty, endCause });
     setPhase("result");
-  }, [contamination, directive, incident, isElite, passenger, phase, protocol.actions, soundOn, storyLink.triggerId, streak, trust, upgrades, whistleUsed]);
+  }, [contamination, directive, gateOrder, incident, isElite, passenger, phase, protocol.actions, reviewReady, reviewTier.bonus, soundOn, storyLink.triggerId, streak, trust, upgrades, whistleUsed]);
 
   const continueAfterResult = () => {
     playTone("tap", soundOn);
@@ -1102,7 +1239,7 @@ export default function Home() {
 
   const ending = useMemo(() => {
     if (trust <= 0) return { mark: "×", kicker: "人事科 · 即时通知", title: "你的检票钳被收走了", body: "误拒不断累积。站长没有责骂你，只让你交回制服。雨棚下仍有人等着一辆不会再由你检票的车。" };
-    if (contamination >= 3) return { mark: "13", kicker: "未登记终点", title: "列车驶入第十三站", body: "车窗外的站牌一个接一个熄灭。你终于明白，异常不需要占满整节车厢——三个就足够替列车选择新的终点。" };
+    if (contamination >= MAX_CONTAMINATION) return { mark: "13", kicker: "未登记终点", title: "列车驶入第十三站", body: "车窗外的站牌一个接一个熄灭。你终于明白，异常不需要占满整节车厢——四次失守就足够替列车选择新的终点。" };
     if (mistakes === 0) return { mark: "✓", kicker: "零点四十七分 · 准点", title: "今夜没有多出一位乘客", body: "终雾站的灯在前方亮起。你合上名册，发现最后一页多了一行小字：谢谢你还记得活人的方向。" };
     return { mark: "◎", kicker: "终雾站 · 清晨将至", title: "末班车仍回到了正确线路", body: "有些判断会在很久以后继续敲打你。但车门打开时，站台是熟悉的站台，晨雾中传来了第一班车的铃声。" };
   }, [contamination, mistakes, trust]);
@@ -1132,9 +1269,9 @@ export default function Home() {
       {phase === "title" && (
         <section className="title-screen">
           <div className="title-copy">
-            <div className="eyebrow"><span /> V2.0 · 规则推理构筑游戏</div>
+            <div className="eyebrow"><span /> V2.5 · 动态闸机令</div>
             <h1>零点之后，<br /><em>不要放错任何人。</em></h1>
-            <p className="lead">让行动牌真正流经抽牌堆与弃牌堆，在二十四位乘客、随机规则与人物连锁之间构筑你的调查方式。使用策略牌扭转节奏，并在每夜终站完成重点复核。</p>
+            <p className="lead">十八次处置、逐人变化的闸机令与三级复核，把每位乘客变成新的条件组合。即使认得这张脸，也必须重新核对这一次的通行资格。</p>
             <div className="title-buttons">
               <button className="primary-button" onClick={startRun}><span>开始今晚值班</span><b>→</b></button>
               <button className="secondary-button" onClick={() => setShowArchive(true)}>查看本机档案</button>
@@ -1209,6 +1346,11 @@ export default function Home() {
               ))}
             </div>
           </div>
+          <article className="checkpoint-preview">
+            <b>令</b>
+            <div><small>V2.5 · 逐人动态条件</small><h3>六位乘客，六条闸机令</h3><p>每位乘客到场时才揭示自己的附加条件；同一个人换一局可能得到完全不同的结论。</p></div>
+            <strong>例行 1 条 → 重点 2 条 → 红色 3 条</strong>
+          </article>
           <article className="incident-card">
             <b>{incident.mark}</b>
             <div><small>本夜线路异况</small><h3>{incident.title}</h3><p>{incident.description}</p></div>
@@ -1236,7 +1378,7 @@ export default function Home() {
             </div>
             <div className="status-meters">
               <div><span>公众信誉</span><b className="trust-pips">{Array.from({ length: maxTrust }, (_, index) => <i key={index} className={index < trust ? "filled" : ""}>◆</i>)}</b></div>
-              <div><span>车厢污染</span><b className="contamination-pips">{[0, 1, 2].map((index) => <i key={index} className={index < contamination ? "filled" : ""}>●</i>)}</b></div>
+              <div><span>车厢污染</span><b className="contamination-pips">{Array.from({ length: MAX_CONTAMINATION }, (_, index) => <i key={index} className={index < contamination ? "filled" : ""}>●</i>)}</b></div>
             </div>
           </div>
 
@@ -1244,17 +1386,18 @@ export default function Home() {
             <aside className="active-rules">
               <div className="panel-label">今夜规则</div>
               {night.rules.map((rule) => <div className="compact-rule" key={rule.mark}><b>{rule.mark}</b><p><strong>{rule.title}</strong><span>{rule.detail}</span></p></div>)}
+              <div className="compact-gate-order"><b>{gateOrder.mark}</b><p><strong>本位闸机令 · {gateOrder.title}</strong><span>{gateOrder.detail}</span></p></div>
               <div className="compact-incident"><b>{incident.mark}</b><p><strong>{incident.title}</strong><span>{incident.effect}</span></p></div>
               <div className="compact-strategy"><b>{directive.mark}</b><p><strong>密令 · {directive.title}</strong><span>{directive.description}（+{directive.reward}）</span></p></div>
               <div className="compact-strategy"><b>{protocol.mark}</b><p><strong>核验 · {protocol.title}</strong><span>组合两项记录可得综合结论</span></p></div>
               <div className="compact-strategy compact-story"><b>{storyLink.mark}</b><p><strong>连锁 · {storyLink.title}</strong><span>{storyTrigger.name}的处置会影响{storyTarget.name}</span></p></div>
-              <div className="decision-tip"><span>判定原则</span><p>违反任意一条规则即可拒载；可疑不等于违规。</p></div>
+              <div className="decision-tip"><span>判定原则</span><p>违反本夜规则或本位闸机令即可拒载；可疑不等于违规。</p></div>
             </aside>
 
-            <article className={`passenger-card ${isElite ? "elite-passenger" : ""}`} style={{ "--passenger-color": passenger.color } as React.CSSProperties}>
+            <article className={`passenger-card ${reviewTier.id === "red" ? "elite-passenger" : ""}`} style={{ "--passenger-color": passenger.color } as React.CSSProperties}>
               <div className="ticket-edge left-edge" aria-hidden="true" />
               <div className="passenger-head">
-                <span>夜行乘车证</span>{isElite && <em className="elite-badge">终站重点复核</em>}<b>NO. {passenger.number}</b>
+                <span>夜行乘车证</span><em className={`review-badge ${reviewTier.id}`}>{reviewTier.name}{isElite ? " · 终站" : ""}</em><b>NO. {passenger.number}</b>
               </div>
               <div className="identity-row">
                 <div className="portrait-block">
@@ -1269,7 +1412,7 @@ export default function Home() {
               </div>
               <div className="visible-details"><div><small>票种</small><strong>{passenger.ticket}</strong></div><div><small>申报行李</small><strong>{passenger.baggage}</strong></div></div>
               <div className="findings-area">
-                <div className="findings-title"><span>调查记录</span><small>{revealed.length === 0 ? "尚未使用行动牌" : `已获得 ${revealed.length} 条信息`}</small></div>
+                <div className="findings-title"><span>调查记录</span><small>复核记录 {reviewRecordCount} / {reviewTier.minRecords} · 综合结论也计入</small></div>
                 <div className="finding-list">
                   {revealed.length === 0 && !storyFinding && <div className="empty-finding"><span>＋</span> 从下方选择行动牌以核验乘客</div>}
                   {revealed.map((key) => { const finding = passenger.findings[key]; return <div className={`finding ${finding.tone}`} key={key}><b>{ACTIONS[key].mark}</b><p><strong>{finding.label}</strong><span>{finding.text}</span></p></div>; })}
@@ -1282,11 +1425,11 @@ export default function Home() {
 
             <aside className="decision-panel">
               <div className="panel-label">最终处置</div>
-              <p>调查后，根据本夜规则作出决定。提交后无法撤回。</p>
-              {isElite && <div className={`elite-check ${eliteReady ? "ready" : ""}`}><b>{eliteReady ? "复核条件已满足" : "重点复核尚未完成"}</b><span>{eliteReady ? "已取得至少两条记录，可以提交处置。" : `还需 ${2 - revealed.length} 条调查记录才能提交。`}</span></div>}
+              <p>同时核对本夜规则与本位闸机令。提交后无法撤回。</p>
+              <div className={`elite-check ${reviewReady ? "ready" : ""}`}><b>{reviewTier.mark} · {reviewTier.name}{reviewReady ? "已完成" : "尚未完成"}</b><span>{reviewReady ? `已取得 ${reviewRecordCount} 条复核记录，可以提交处置。` : `还需 ${reviewTier.minRecords - reviewRecordCount} 条复核记录；综合结论同样计入。`}</span>{reviewTier.bonus > 0 && <i>正确处置额外 +{reviewTier.bonus}</i>}</div>
               <div className="decision-buttons">
-                <button className="allow-button" onClick={() => makeVerdict("allow")} disabled={phase === "result" || !eliteReady}><span>准予乘车</span><small>A 键</small></button>
-                <button className="deny-button" onClick={() => makeVerdict("deny")} disabled={phase === "result" || !eliteReady}><span>拒绝上车</span><small>D 键</small></button>
+                <button className="allow-button" onClick={() => makeVerdict("allow")} disabled={phase === "result" || !reviewReady}><span>准予乘车</span><small>A 键</small></button>
+                <button className="deny-button" onClick={() => makeVerdict("deny")} disabled={phase === "result" || !reviewReady}><span>拒绝上车</span><small>D 键</small></button>
               </div>
               <div className="salary-box"><span>本夜津贴 · 连判 {streak}</span><strong>¥ {credits}</strong><small>{streak >= 2 ? `连判奖励已提高至 +${Math.min(streak - 1, 4) * 3}` : "连续正确判断可提高每次津贴"}</small></div>
             </aside>
@@ -1331,8 +1474,10 @@ export default function Home() {
                 <p>{result.explanation}</p>
                 <blockquote>{result.passenger.farewell}</blockquote>
                 <div className="result-impact">
-                  {result.correct ? <><span className="positive">连判 {result.streak} · 夜班津贴 +{result.reward}</span><span className={result.directiveMet ? "directive-hit" : "neutral"}>{result.directiveMet ? `密令完成 · 额外 +${result.directiveReward}` : `密令未完成 · ${directive.title}`}</span></> : result.passenger.isAnomaly ? <span className="negative">连判中断 · 车厢污染上升</span> : <span className="negative">连判中断 · 公众信誉下降</span>}
+                  {result.correct ? <><span className="positive">连判 {result.streak} · 夜班津贴 +{result.reward}</span><span className={result.directiveMet ? "directive-hit" : "neutral"}>{result.directiveMet ? `密令完成 · 额外 +${result.directiveReward}` : `密令未完成 · ${directive.title}`}</span></> : <span className="negative">连判中断 · {result.penalty === "contamination" ? "车厢污染上升" : "公众信誉下降"}</span>}
+                  <span className={result.gateHit ? "gate-hit" : "neutral"}>{result.gateHit ? "本位闸机令命中" : "本位闸机令未命中"}</span>
                   {result.tacticReward > 0 && <span className="tactic-hit">策略生效 · 复核章 +{result.tacticReward}</span>}
+                  {result.reviewBonus > 0 && <span className="review-hit">{reviewTier.name}完成 · +{result.reviewBonus}</span>}
                   {result.eliteBonus > 0 && <span className="elite-hit">重点复核完成 · +{result.eliteBonus}</span>}
                   {result.storyAdvanced && <span className="story-hit">连锁已记录 · {storyLink.title}</span>}
                 </div>
@@ -1404,7 +1549,7 @@ export default function Home() {
         <div className="guide-overlay" role="dialog" aria-modal="true" aria-label="调查牌组">
           <div className="deck-book">
             <button className="close-button" onClick={() => setShowDeck(false)} aria-label="关闭调查牌组">×</button>
-            <span className="section-kicker">V2.0 · 值班牌库</span>
+            <span className="section-kicker">V2.5 · 值班牌库</span>
             <h2>调查牌组</h2>
             <p className="deck-intro">每次抽取会真实消耗抽牌堆；当前抽牌堆用尽后，弃牌堆会洗回继续使用。夜间强化既带来常驻能力，也会向牌组加入一张新牌。</p>
             <div className="deck-summary">
@@ -1434,12 +1579,13 @@ export default function Home() {
             <h2>值班手册</h2>
             <div className="guide-steps">
               <div><b>01</b><p><strong>先读本夜规则</strong><span>规则每夜更换，上一夜的禁令可能不再有效。</span></p></div>
-              <div><b>02</b><p><strong>管理抽牌与弃牌</strong><span>每位乘客抽四张牌；未保留的手牌会进入弃牌堆，抽牌堆耗尽时自动洗回。</span></p></div>
-              <div><b>03</b><p><strong>打出策略牌</strong><span>策略牌不消耗专注，可恢复资源、保留手牌、免费调查或提高正确处置收益。</span></p></div>
-              <div><b>04</b><p><strong>完成重点复核</strong><span>每夜最后一位是重点乘客，必须取得至少两条调查记录后才能提交处置。</span></p></div>
-              <div><b>05</b><p><strong>构筑调查牌组</strong><span>每夜结束选择一项强化，并把对应的新调查牌或策略牌永久加入本局牌组。</span></p></div>
-              <div><b>06</b><p><strong>留意人物连锁</strong><span>本夜首位乘客的处置，会为末位乘客生成一条额外关系线索。</span></p></div>
-              <div><b>07</b><p><strong>保住这趟列车</strong><span>信誉归零或污染达到 3 点，夜班将提前结束。</span></p></div>
+              <div><b>02</b><p><strong>再读本位闸机令</strong><span>每位乘客都有独立的随机附加条件；熟悉的人物也可能因此改变正确结论。</span></p></div>
+              <div><b>03</b><p><strong>完成分级复核</strong><span>每夜依次经历例行、重点与红色终审，分别需要 1、2、3 条复核记录。</span></p></div>
+              <div><b>04</b><p><strong>管理抽牌与弃牌</strong><span>每位乘客抽四张牌；未保留的手牌会进入弃牌堆，抽牌堆耗尽时自动洗回。</span></p></div>
+              <div><b>05</b><p><strong>打出策略牌</strong><span>策略牌不消耗专注，可恢复资源、保留手牌、免费调查或提高正确处置收益。</span></p></div>
+              <div><b>06</b><p><strong>构筑调查牌组</strong><span>每夜结束选择一项强化，并把对应的新调查牌或策略牌永久加入本局牌组。</span></p></div>
+              <div><b>07</b><p><strong>留意综合记录</strong><span>交叉核验与人物连锁生成的综合结论也计入复核门槛，可用来节省专注。</span></p></div>
+              <div><b>08</b><p><strong>保住这趟列车</strong><span>信誉归零或污染达到 4 点，夜班将提前结束。</span></p></div>
             </div>
             <div className="shortcut-line"><span>键盘快捷键</span><b>1–4 出牌</b><b>R 重整</b><b>P 协查</b><b>A / D 处置</b></div>
             <button className="primary-button centered" onClick={() => setShowGuide(false)}><span>合上手册</span><b>✓</b></button>

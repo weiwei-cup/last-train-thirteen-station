@@ -2,10 +2,10 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 const githubPagesUrl = "https://weiwei-cup.github.io/last-train-thirteen-station";
-const description = "V2.0 规则推理构筑游戏：管理抽牌与弃牌、打出策略牌，调查十二位随机乘客并守住零点后的末班车。";
+const description = "V2.5 动态闸机令：在十八次处置中管理调查牌组，应对每位乘客独立变化的通行条件与三级复核。";
 
 export const metadata: Metadata = {
-  title: "末班车：十三号站 V2.0｜规则推理构筑游戏",
+  title: "末班车：十三号站 V2.5｜动态闸机令",
   description,
   metadataBase: new URL(githubPagesUrl),
   openGraph: {
