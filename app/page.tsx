@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Phase = "title" | "contract" | "briefing" | "inspection" | "result" | "shift-end" | "ending";
 type InvestigationKey = "ticket" | "mirror" | "question" | "pulse" | "bag";
@@ -47,6 +47,8 @@ type VerdictResult = {
   explanation: string;
   reward: number;
   streak: number;
+  directiveMet: boolean;
+  directiveReward: number;
   endCause?: "trust" | "contamination";
 };
 
@@ -84,6 +86,25 @@ type RouteIncident = {
   costDelta?: number;
   focusDelta?: number;
   rewardDelta?: number;
+};
+
+type DirectiveKind = "swift" | "thorough" | "reserve" | "ticket" | "mirror" | "cross-check";
+
+type NightDirective = {
+  id: string;
+  mark: string;
+  title: string;
+  description: string;
+  kind: DirectiveKind;
+  reward: number;
+};
+
+type CrossCheckProtocol = {
+  id: string;
+  mark: string;
+  title: string;
+  description: string;
+  actions: [InvestigationKey, InvestigationKey];
 };
 
 type StoredRecord = {
@@ -128,6 +149,21 @@ const ROUTE_INCIDENTS: RouteIncident[] = [
   { id: "patrol-lamp", mark: "灯", title: "乘警探照灯", description: "一盏强光手提灯留在值班台，可迅速照清行李夹层。", effect: "检查行李 -1 专注", action: "bag", costDelta: -1 },
   { id: "station-tea", mark: "茶", title: "站务员的浓茶", description: "休息室送来一杯滚烫浓茶，今夜判断格外清醒。", effect: "每位乘客 +1 专注", focusDelta: 1 },
   { id: "urgent-bonus", mark: "奖", title: "临时加班津贴", description: "线路晚点导致人手紧张，正确处置可获得额外补贴。", effect: "正确判断额外 +4 津贴", rewardDelta: 4 },
+];
+
+const NIGHT_DIRECTIVES: NightDirective[] = [
+  { id: "swift", mark: "速", title: "一眼识人", description: "恰好取得一条调查记录并正确处置。", kind: "swift", reward: 5 },
+  { id: "thorough", mark: "全", title: "三重核验", description: "取得至少三条调查记录后正确处置。", kind: "thorough", reward: 7 },
+  { id: "reserve", mark: "省", title: "精打细算", description: "至少调查一次，并在只剩一点专注时正确处置。", kind: "reserve", reward: 5 },
+  { id: "ticket", mark: "票", title: "票证优先", description: "核验车票后作出正确处置。", kind: "ticket", reward: 3 },
+  { id: "mirror", mark: "镜", title: "镜面取证", description: "照见倒影后作出正确处置。", kind: "mirror", reward: 3 },
+  { id: "cross-check", mark: "合", title: "完整复核", description: "触发本夜交叉核验后正确处置。", kind: "cross-check", reward: 8 },
+];
+
+const CROSS_CHECK_PROTOCOLS: CrossCheckProtocol[] = [
+  { id: "testimony", mark: "证", title: "票证 × 证词", description: "同时完成核验车票与简短问询，自动生成证词一致性结论。", actions: ["ticket", "question"] },
+  { id: "vital", mark: "生", title: "倒影 × 心跳", description: "同时完成照见倒影与听取心跳，自动生成生命特征结论。", actions: ["mirror", "pulse"] },
+  { id: "route", mark: "路", title: "车票 × 行李", description: "同时完成核验车票与检查行李，自动生成行程来源结论。", actions: ["ticket", "bag"] },
 ];
 
 const NIGHTS: Night[] = [
@@ -476,9 +512,45 @@ function createRunIncidents(): RouteIncident[] {
   return shuffle(ROUTE_INCIDENTS).slice(0, NIGHTS.length);
 }
 
+function createRunDirectives(): NightDirective[] {
+  return shuffle(NIGHT_DIRECTIVES).slice(0, NIGHTS.length);
+}
+
+function createRunProtocols(): CrossCheckProtocol[] {
+  return shuffle(CROSS_CHECK_PROTOCOLS).slice(0, NIGHTS.length);
+}
+
 function createUpgradeOffers(): UpgradeId[][] {
   const deck = shuffle(UPGRADES).map((upgrade) => upgrade.id);
   return [deck.slice(0, 3), deck.slice(3, 6)];
+}
+
+function directiveSatisfied(directive: NightDirective, revealed: InvestigationKey[], focus: number, crossCheckUnlocked: boolean): boolean {
+  if (directive.kind === "swift") return revealed.length === 1;
+  if (directive.kind === "thorough") return revealed.length >= 3;
+  if (directive.kind === "reserve") return revealed.length >= 1 && focus === 1;
+  if (directive.kind === "ticket") return revealed.includes("ticket");
+  if (directive.kind === "mirror") return revealed.includes("mirror");
+  return crossCheckUnlocked;
+}
+
+function getCrossCheckFinding(protocol: CrossCheckProtocol, passenger: Passenger): Finding {
+  const messages: Record<string, { safe: string; anomaly: string }> = {
+    testimony: {
+      safe: "票面信息与口述细节能够相互印证，暂未发现新的冲突。",
+      anomaly: "票面信息与口述细节存在无法解释的错位。",
+    },
+    vital: {
+      safe: "倒影中的身体反应与听取到的生命节律能够对应。",
+      anomaly: "倒影中的身体反应与听取到的节律无法对应。",
+    },
+    route: {
+      safe: "票面行程与随身物品指向同一段旅途。",
+      anomaly: "票面行程与随身物品指向了不同的来处。",
+    },
+  };
+  const message = messages[protocol.id] ?? messages.testimony;
+  return { label: protocol.title, text: passenger.isAnomaly ? message.anomaly : message.safe, tone: passenger.isAnomaly ? "warning" : "safe" };
 }
 
 function playTone(kind: "tap" | "good" | "bad", enabled: boolean) {
@@ -503,6 +575,8 @@ export default function Home() {
   const [contractId, setContractId] = useState<ContractId>("standard");
   const [runRosters, setRunRosters] = useState<Passenger[][]>(() => NIGHTS.map((night) => night.passengers));
   const [runIncidents, setRunIncidents] = useState<RouteIncident[]>(() => ROUTE_INCIDENTS.slice(0, NIGHTS.length));
+  const [runDirectives, setRunDirectives] = useState<NightDirective[]>(() => NIGHT_DIRECTIVES.slice(0, NIGHTS.length));
+  const [runProtocols, setRunProtocols] = useState<CrossCheckProtocol[]>(() => CROSS_CHECK_PROTOCOLS.slice(0, NIGHTS.length));
   const [upgradeOffers, setUpgradeOffers] = useState<UpgradeId[][]>(() => [UPGRADES.slice(0, 3).map((item) => item.id), UPGRADES.slice(3, 6).map((item) => item.id)]);
   const [lastRosterIds, setLastRosterIds] = useState<string[][]>([]);
   const [nightIndex, setNightIndex] = useState(0);
@@ -516,6 +590,7 @@ export default function Home() {
   const [streak, setStreak] = useState(0);
   const [runBestStreak, setRunBestStreak] = useState(0);
   const [revealed, setRevealed] = useState<InvestigationKey[]>([]);
+  const [supportAvailable, setSupportAvailable] = useState(true);
   const [result, setResult] = useState<VerdictResult | null>(null);
   const [upgrades, setUpgrades] = useState<UpgradeId[]>([]);
   const [whistleUsed, setWhistleUsed] = useState(false);
@@ -526,12 +601,20 @@ export default function Home() {
   const [soundOn, setSoundOn] = useState(true);
   const [showGuide, setShowGuide] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
+  const revealedRef = useRef<InvestigationKey[]>([]);
+  const focusRef = useRef(3);
+  const supportAvailableRef = useRef(true);
+  const verdictLockedRef = useRef(false);
 
   const night = NIGHTS[nightIndex];
   const contract = CONTRACTS.find((item) => item.id === contractId) ?? CONTRACTS[0];
   const activePassengers = runRosters[nightIndex] ?? night.passengers;
   const incident = runIncidents[nightIndex] ?? ROUTE_INCIDENTS[0];
+  const directive = runDirectives[nightIndex] ?? NIGHT_DIRECTIVES[0];
+  const protocol = runProtocols[nightIndex] ?? CROSS_CHECK_PROTOCOLS[0];
   const passenger = activePassengers[passengerIndex];
+  const crossCheckUnlocked = protocol.actions.every((key) => revealed.includes(key));
+  const crossCheckFinding = getCrossCheckFinding(protocol, passenger);
   const maxFocus = contract.focus + (upgrades.includes("night-tea") ? 1 : 0) + (incident.focusDelta ?? 0);
   const maxTrust = contract.trust + (upgrades.includes("red-thread") ? 1 : 0);
   const rawScore = Math.max(0, credits + caught * 20 + trust * 10 - contamination * 15 - mistakes * 5);
@@ -597,10 +680,13 @@ export default function Home() {
     setRunRosters(nextRosters);
     setLastRosterIds(nextRosterIds);
     setRunIncidents(createRunIncidents());
+    setRunDirectives(createRunDirectives());
+    setRunProtocols(createRunProtocols());
     setUpgradeOffers(createUpgradeOffers());
     setNightIndex(0);
     setPassengerIndex(0);
     setFocus(selected.focus);
+    focusRef.current = selected.focus;
     setTrust(selected.trust);
     setContamination(selected.contamination);
     setCredits(0);
@@ -609,6 +695,10 @@ export default function Home() {
     setStreak(0);
     setRunBestStreak(0);
     setRevealed([]);
+    revealedRef.current = [];
+    setSupportAvailable(true);
+    supportAvailableRef.current = true;
+    verdictLockedRef.current = false;
     setResult(null);
     setUpgrades([]);
     setWhistleUsed(false);
@@ -619,27 +709,51 @@ export default function Home() {
     playTone("tap", soundOn);
     setPassengerIndex(0);
     setFocus(maxFocus);
+    focusRef.current = maxFocus;
     setRevealed([]);
+    revealedRef.current = [];
+    setSupportAvailable(true);
+    supportAvailableRef.current = true;
+    verdictLockedRef.current = false;
     setResult(null);
     setPhase("inspection");
   };
 
   const investigate = useCallback((key: InvestigationKey) => {
-    if (phase !== "inspection" || revealed.includes(key)) return;
+    if (phase !== "inspection" || revealedRef.current.includes(key)) return;
     const cost = actionCost(key);
-    if (focus < cost) return;
+    if (focusRef.current < cost) return;
     playTone("tap", soundOn);
-    setFocus((value) => value - cost);
-    setRevealed((items) => {
-      const next = [...items, key];
-      if (key === "ticket" && upgrades.includes("double-punch") && !next.includes("question")) next.push("question");
-      return next;
-    });
-  }, [actionCost, focus, phase, revealed, soundOn, upgrades]);
+    focusRef.current -= cost;
+    const next = [...revealedRef.current, key];
+    if (key === "ticket" && upgrades.includes("double-punch") && !next.includes("question")) next.push("question");
+    revealedRef.current = next;
+    setFocus(focusRef.current);
+    setRevealed(next);
+  }, [actionCost, phase, soundOn, upgrades]);
+
+  const callSupport = useCallback(() => {
+    if (phase !== "inspection" || !supportAvailableRef.current) return;
+    const allActions = Object.keys(ACTIONS) as InvestigationKey[];
+    const missingProtocolAction = protocol.actions.find((key) => !revealedRef.current.includes(key));
+    const target = missingProtocolAction ?? allActions.find((key) => !revealedRef.current.includes(key));
+    if (!target) return;
+    supportAvailableRef.current = false;
+    setSupportAvailable(false);
+    const next = [...revealedRef.current, target];
+    if (target === "ticket" && upgrades.includes("double-punch") && !next.includes("question")) next.push("question");
+    revealedRef.current = next;
+    setRevealed(next);
+    playTone("good", soundOn);
+  }, [phase, protocol.actions, soundOn, upgrades]);
 
   const makeVerdict = useCallback((decision: "allow" | "deny") => {
-    if (phase !== "inspection") return;
+    if (phase !== "inspection" || verdictLockedRef.current) return;
+    verdictLockedRef.current = true;
     const correct = (decision === "deny") === passenger.isAnomaly;
+    const didCrossCheck = protocol.actions.every((key) => revealedRef.current.includes(key));
+    const directiveMet = correct && directiveSatisfied(directive, revealedRef.current, focusRef.current, didCrossCheck);
+    const directiveReward = directiveMet ? directive.reward : 0;
     let nextTrust = trust;
     let nextContamination = contamination;
     let reward = 0;
@@ -648,7 +762,7 @@ export default function Home() {
     if (correct) {
       nextStreak = streak + 1;
       setRunBestStreak((value) => Math.max(value, nextStreak));
-      reward = 12 + Math.min(nextStreak - 1, 4) * 3 + (upgrades.includes("old-ledger") ? 5 : 0) + (incident.rewardDelta ?? 0);
+      reward = 12 + Math.min(nextStreak - 1, 4) * 3 + (upgrades.includes("old-ledger") ? 5 : 0) + (incident.rewardDelta ?? 0) + directiveReward;
       setStreak(nextStreak);
       setCredits((value) => value + reward);
       if (passenger.isAnomaly) setCaught((value) => value + 1);
@@ -681,12 +795,13 @@ export default function Home() {
         : `${passenger.violation} 你拒绝了一位符合规定的乘客。`;
 
     setArchiveIds((items) => items.includes(passenger.id) ? items : [...items, passenger.id]);
-    setResult({ correct, decision, passenger, title, explanation, reward, streak: nextStreak, endCause });
+    setResult({ correct, decision, passenger, title, explanation, reward, streak: nextStreak, directiveMet, directiveReward, endCause });
     setPhase("result");
-  }, [contamination, incident, passenger, phase, soundOn, streak, trust, upgrades, whistleUsed]);
+  }, [contamination, directive, incident, passenger, phase, protocol.actions, soundOn, streak, trust, upgrades, whistleUsed]);
 
   const continueAfterResult = () => {
     playTone("tap", soundOn);
+    verdictLockedRef.current = false;
     if (result?.endCause) {
       setPhase("ending");
       return;
@@ -699,7 +814,9 @@ export default function Home() {
     }
     setPassengerIndex((value) => value + 1);
     setFocus(maxFocus);
+    focusRef.current = maxFocus;
     setRevealed([]);
+    revealedRef.current = [];
     setResult(null);
     setPhase("inspection");
   };
@@ -712,8 +829,12 @@ export default function Home() {
     const nextIncident = runIncidents[nextNight];
     setNightIndex(nextNight);
     setPassengerIndex(0);
-    setFocus(contract.focus + (upgrade.id === "night-tea" || upgrades.includes("night-tea") ? 1 : 0) + (nextIncident?.focusDelta ?? 0));
+    const nextFocus = contract.focus + (upgrade.id === "night-tea" || upgrades.includes("night-tea") ? 1 : 0) + (nextIncident?.focusDelta ?? 0);
+    setFocus(nextFocus);
+    focusRef.current = nextFocus;
     setRevealed([]);
+    revealedRef.current = [];
+    verdictLockedRef.current = false;
     setResult(null);
     setPhase("briefing");
   };
@@ -723,12 +844,13 @@ export default function Home() {
       if (phase !== "inspection") return;
       const keyMap: Record<string, InvestigationKey> = { "1": "ticket", "2": "mirror", "3": "question", "4": "pulse", "5": "bag" };
       if (keyMap[event.key]) investigate(keyMap[event.key]);
+      if (event.key.toLowerCase() === "p") callSupport();
       if (event.key.toLowerCase() === "a") makeVerdict("allow");
       if (event.key.toLowerCase() === "d") makeVerdict("deny");
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [investigate, makeVerdict, phase]);
+  }, [callSupport, investigate, makeVerdict, phase]);
 
   const ending = useMemo(() => {
     if (trust <= 0) return { mark: "×", kicker: "人事科 · 即时通知", title: "你的检票钳被收走了", body: "误拒不断累积。站长没有责骂你，只让你交回制服。雨棚下仍有人等着一辆不会再由你检票的车。" };
@@ -763,7 +885,7 @@ export default function Home() {
           <div className="title-copy">
             <div className="eyebrow"><span /> 规则推理卡牌游戏</div>
             <h1>零点之后，<br /><em>不要放错任何人。</em></h1>
-            <p className="lead">二十四位可能出现的乘客，每次值班都会更换人物编组、线路异况与装备牌组。检查车票、倒影与心跳，在末班车驶入浓雾前，决定谁能上车。</p>
+            <p className="lead">二十四位可能出现的乘客，每次值班都会更换人物编组、线路异况、夜班密令与核验组合。检查车票、倒影与心跳，在末班车驶入浓雾前，决定谁能上车。</p>
             <div className="title-buttons">
               <button className="primary-button" onClick={startRun}><span>开始今晚值班</span><b>→</b></button>
               <button className="secondary-button" onClick={() => setShowArchive(true)}>查看本机档案</button>
@@ -843,6 +965,10 @@ export default function Home() {
             <div><small>本夜线路异况</small><h3>{incident.title}</h3><p>{incident.description}</p></div>
             <strong>{incident.effect}</strong>
           </article>
+          <div className="strategy-board">
+            <article className="strategy-card directive-card"><b>{directive.mark}</b><div><small>本夜随机密令 · 正确处置时结算</small><h3>{directive.title}</h3><p>{directive.description}</p></div><strong>完成 +{directive.reward}</strong></article>
+            <article className="strategy-card protocol-card"><b>{protocol.mark}</b><div><small>本夜交叉核验</small><h3>{protocol.title}</h3><p>{protocol.description}</p></div><strong>自动生成综合结论</strong></article>
+          </div>
           {upgrades.length > 0 && (
             <div className="equipped-row"><span>本局已装备</span>{upgrades.map((id) => { const item = UPGRADES.find((upgrade) => upgrade.id === id)!; return <span className="mini-upgrade" key={id}>{item.mark} {item.name}</span>; })}</div>
           )}
@@ -869,6 +995,8 @@ export default function Home() {
               <div className="panel-label">今夜规则</div>
               {night.rules.map((rule) => <div className="compact-rule" key={rule.mark}><b>{rule.mark}</b><p><strong>{rule.title}</strong><span>{rule.detail}</span></p></div>)}
               <div className="compact-incident"><b>{incident.mark}</b><p><strong>{incident.title}</strong><span>{incident.effect}</span></p></div>
+              <div className="compact-strategy"><b>{directive.mark}</b><p><strong>密令 · {directive.title}</strong><span>{directive.description}（+{directive.reward}）</span></p></div>
+              <div className="compact-strategy"><b>{protocol.mark}</b><p><strong>核验 · {protocol.title}</strong><span>组合两项记录可得综合结论</span></p></div>
               <div className="decision-tip"><span>判定原则</span><p>违反任意一条规则即可拒载；可疑不等于违规。</p></div>
             </aside>
 
@@ -894,6 +1022,7 @@ export default function Home() {
                 <div className="finding-list">
                   {revealed.length === 0 && <div className="empty-finding"><span>＋</span> 从下方选择行动牌以核验乘客</div>}
                   {revealed.map((key) => { const finding = passenger.findings[key]; return <div className={`finding ${finding.tone}`} key={key}><b>{ACTIONS[key].mark}</b><p><strong>{finding.label}</strong><span>{finding.text}</span></p></div>; })}
+                  {crossCheckUnlocked && <div className={`finding cross-check ${crossCheckFinding.tone}`} aria-live="polite"><b>{protocol.mark}</b><p><strong>交叉核验 · {crossCheckFinding.label}</strong><span>{crossCheckFinding.text}</span></p></div>}
                 </div>
               </div>
               <div className="ticket-barcode" aria-hidden="true">|||| ||| | |||| | | ||| ||</div>
@@ -919,6 +1048,9 @@ export default function Home() {
                   <span className="key-hint">{index + 1}</span><b className="action-mark">{action.mark}</b><strong>{action.name}</strong><small>{action.hint}</small><i>{used ? "已使用" : `${cost} 专注`}</i>
                 </button>;
               })}
+              <button className={`action-card support-card ${supportAvailable ? "" : "used"}`} onClick={callSupport} disabled={!supportAvailable || revealed.length === Object.keys(ACTIONS).length || phase === "result"}>
+                <span className="key-hint">P</span><b className="action-mark">援</b><strong>乘警协查</strong><small>免费补齐一项核验记录</small><i>{supportAvailable ? "每夜 1 次" : "本夜已使用"}</i>
+              </button>
             </div>
           </div>
 
@@ -931,7 +1063,7 @@ export default function Home() {
                 <p>{result.explanation}</p>
                 <blockquote>{result.passenger.farewell}</blockquote>
                 <div className="result-impact">
-                  {result.correct ? <span className="positive">连判 {result.streak} · 夜班津贴 +{result.reward}</span> : result.passenger.isAnomaly ? <span className="negative">连判中断 · 车厢污染上升</span> : <span className="negative">连判中断 · 公众信誉下降</span>}
+                  {result.correct ? <><span className="positive">连判 {result.streak} · 夜班津贴 +{result.reward}</span><span className={result.directiveMet ? "directive-hit" : "neutral"}>{result.directiveMet ? `密令完成 · 额外 +${result.directiveReward}` : `密令未完成 · ${directive.title}`}</span></> : result.passenger.isAnomaly ? <span className="negative">连判中断 · 车厢污染上升</span> : <span className="negative">连判中断 · 公众信誉下降</span>}
                 </div>
                 <button className="primary-button centered" onClick={continueAfterResult}><span>{result.endCause ? "查看夜班结局" : passengerIndex === activePassengers.length - 1 ? "结束本夜检票" : "呼叫下一位乘客"}</span><b>→</b></button>
               </div>
@@ -1005,12 +1137,12 @@ export default function Home() {
             <h2>值班手册</h2>
             <div className="guide-steps">
               <div><b>01</b><p><strong>先读本夜规则</strong><span>规则每夜更换，上一夜的禁令可能不再有效。</span></p></div>
-              <div><b>02</b><p><strong>使用行动牌调查</strong><span>专注点数由值班契约决定。可疑信息并不一定构成违规。</span></p></div>
+              <div><b>02</b><p><strong>组合行动牌调查</strong><span>完成本夜指定的两项核验会生成综合结论；乘警协查每夜可免费使用一次。</span></p></div>
               <div><b>03</b><p><strong>作出最终处置</strong><span>放行异常会增加污染；误拒普通乘客会损失信誉。</span></p></div>
               <div><b>04</b><p><strong>保住这趟列车</strong><span>信誉归零或污染达到 3 点，夜班将提前结束。</span></p></div>
-              <div><b>05</b><p><strong>维持连续判断</strong><span>连续正确会逐步提高夜班津贴，失误将令连判归零。</span></p></div>
+              <div><b>05</b><p><strong>挑战随机密令</strong><span>每夜都有额外目标；满足条件并正确处置，可获得密令津贴。</span></p></div>
             </div>
-            <div className="shortcut-line"><span>键盘快捷键</span><b>1–5 调查</b><b>A 放行</b><b>D 拒载</b></div>
+            <div className="shortcut-line"><span>键盘快捷键</span><b>1–5 调查</b><b>P 协查</b><b>A 放行</b><b>D 拒载</b></div>
             <button className="primary-button centered" onClick={() => setShowGuide(false)}><span>合上手册</span><b>✓</b></button>
           </div>
         </div>
