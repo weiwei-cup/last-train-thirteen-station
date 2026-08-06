@@ -49,6 +49,7 @@ type VerdictResult = {
   streak: number;
   directiveMet: boolean;
   directiveReward: number;
+  storyAdvanced: boolean;
   endCause?: "trust" | "contamination";
 };
 
@@ -74,6 +75,7 @@ type Upgrade = {
   name: string;
   kicker: string;
   description: string;
+  deckCard: InvestigationKey;
 };
 
 type RouteIncident = {
@@ -107,6 +109,22 @@ type CrossCheckProtocol = {
   actions: [InvestigationKey, InvestigationKey];
 };
 
+type StoryPattern = {
+  id: string;
+  mark: string;
+  title: string;
+  briefing: string;
+  allowText: string;
+  denyText: string;
+};
+
+type StoryLink = StoryPattern & {
+  triggerId: string;
+  targetId: string;
+};
+
+type VerdictDecision = "allow" | "deny";
+
 type StoredRecord = {
   bestScore?: number;
   runs?: number;
@@ -127,13 +145,15 @@ const ACTIONS: Record<InvestigationKey, { mark: string; name: string; cost: numb
   bag: { mark: "▰", name: "检查行李", cost: 2, hint: "查看随身物品" },
 };
 
+const STARTER_ACTION_DECK: InvestigationKey[] = ["ticket", "ticket", "mirror", "mirror", "question", "question", "pulse", "pulse", "bag", "bag"];
+
 const UPGRADES: Upgrade[] = [
-  { id: "silver-mirror", mark: "◑", name: "银背小镜", kicker: "器材牌", description: "每位乘客的「照见倒影」不再消耗专注。" },
-  { id: "double-punch", mark: "✦", name: "双孔票钳", kicker: "器材牌", description: "核验车票时，同时获得简短问询的结果。" },
-  { id: "night-tea", mark: "♨", name: "浓酽夜茶", kicker: "补给牌", description: "每位乘客可用专注从 3 点提高至 4 点。" },
-  { id: "red-thread", mark: "∞", name: "乘警红绳", kicker: "护身牌", description: "信誉上限与当前信誉各提高 1 点。" },
-  { id: "old-ledger", mark: "冊", name: "旧站名册", kicker: "档案牌", description: "每次正确判断额外获得 5 元夜班津贴。" },
-  { id: "brass-whistle", mark: "！", name: "黄铜警哨", kicker: "应急牌", description: "第一次放行异常乘客时，不增加车厢污染。" },
+  { id: "silver-mirror", mark: "◑", name: "银背小镜", kicker: "器材牌", description: "每位乘客的「照见倒影」不再消耗专注。", deckCard: "mirror" },
+  { id: "double-punch", mark: "✦", name: "双孔票钳", kicker: "器材牌", description: "核验车票时，同时获得简短问询的结果。", deckCard: "ticket" },
+  { id: "night-tea", mark: "♨", name: "浓酽夜茶", kicker: "补给牌", description: "每位乘客可用专注从 3 点提高至 4 点。", deckCard: "question" },
+  { id: "red-thread", mark: "∞", name: "乘警红绳", kicker: "护身牌", description: "信誉上限与当前信誉各提高 1 点。", deckCard: "pulse" },
+  { id: "old-ledger", mark: "冊", name: "旧站名册", kicker: "档案牌", description: "每次正确判断额外获得 5 元夜班津贴。", deckCard: "bag" },
+  { id: "brass-whistle", mark: "！", name: "黄铜警哨", kicker: "应急牌", description: "第一次放行异常乘客时，不增加车厢污染。", deckCard: "question" },
 ];
 
 const CONTRACTS: DutyContract[] = [
@@ -164,6 +184,15 @@ const CROSS_CHECK_PROTOCOLS: CrossCheckProtocol[] = [
   { id: "testimony", mark: "证", title: "票证 × 证词", description: "同时完成核验车票与简短问询，自动生成证词一致性结论。", actions: ["ticket", "question"] },
   { id: "vital", mark: "生", title: "倒影 × 心跳", description: "同时完成照见倒影与听取心跳，自动生成生命特征结论。", actions: ["mirror", "pulse"] },
   { id: "route", mark: "路", title: "车票 × 行李", description: "同时完成核验车票与检查行李，自动生成行程来源结论。", actions: ["ticket", "bag"] },
+];
+
+const STORY_PATTERNS: StoryPattern[] = [
+  { id: "lost-property", mark: "遗", title: "失物转交", briefing: "首位乘客留下的物件，会在末位乘客身边再次出现。", allowText: "{trigger}获准上车后遗落了一件小物；它此刻从{target}的随身物品中露出一角。", denyText: "{trigger}被拒载后，站务员送回一件失物；标签上却写着{target}的目的地。" },
+  { id: "witness", mark: "证", title: "站台目击", briefing: "首位乘客的去留，会改变末位乘客能提供的目击证词。", allowText: "{target}声称在车厢里见过{trigger}，并准确描述了对方上车后的座位。", denyText: "{target}坚称刚在车厢里见过{trigger}，但你明明已经将其拒载。" },
+  { id: "seat-transfer", mark: "座", title: "座位转签", briefing: "一张被处置过的座位签，会流转到本夜最后一人手中。", allowText: "{target}拿出的座位签背面，有{trigger}刚刚留下的指印与划痕。", denyText: "{target}持有一张作废座位签，编号正属于被你拒载的{trigger}。" },
+  { id: "station-call", mark: "铃", title: "站台来电", briefing: "调度室会根据首位乘客的处置，补来一段与末位乘客有关的记录。", allowText: "调度来电：{trigger}上车后曾询问{target}是否已经抵达。", denyText: "调度来电：{trigger}离开站台前，反复要求拦下名为{target}的人。" },
+  { id: "shared-token", mark: "符", title: "同号凭记", briefing: "两位相隔最远的乘客，携带着一对本不该重复的凭记。", allowText: "{target}的凭记与{trigger}上车时出示的那枚完全同号，磨损位置也一致。", denyText: "你从{trigger}处扣下的凭记仍在桌上，{target}却拿出了另一枚同号物。" },
+  { id: "route-rumor", mark: "讯", title: "线路传闻", briefing: "首位乘客会把一段真假难辨的路线消息传到末位乘客处。", allowText: "{target}复述了只有已上车的{trigger}听过的临时改线消息。", denyText: "{target}仍在复述{trigger}被拒载前散布的改线消息，字句一模一样。" },
 ];
 
 const NIGHTS: Night[] = [
@@ -520,6 +549,32 @@ function createRunProtocols(): CrossCheckProtocol[] {
   return shuffle(CROSS_CHECK_PROTOCOLS).slice(0, NIGHTS.length);
 }
 
+function createRunStoryLinks(rosters: Passenger[][]): StoryLink[] {
+  const patterns = shuffle(STORY_PATTERNS).slice(0, rosters.length);
+  return rosters.map((roster, index) => ({
+    ...(patterns[index] ?? STORY_PATTERNS[index % STORY_PATTERNS.length]),
+    triggerId: roster[0].id,
+    targetId: roster[roster.length - 1].id,
+  }));
+}
+
+function dealActionHand(deck: InvestigationKey[], revealed: InvestigationKey[] = []): InvestigationKey[] {
+  const drawUnique = (source: InvestigationKey[], target: InvestigationKey[]) => {
+    const pool = [...source];
+    while (pool.length > 0 && target.length < 4) {
+      const picked = pool[Math.floor(Math.random() * pool.length)];
+      if (!target.includes(picked)) target.push(picked);
+      for (let index = pool.length - 1; index >= 0; index -= 1) {
+        if (pool[index] === picked) pool.splice(index, 1);
+      }
+    }
+  };
+  const hand: InvestigationKey[] = [];
+  drawUnique(deck.filter((key) => !revealed.includes(key)), hand);
+  if (hand.length < 4) drawUnique(deck, hand);
+  return hand;
+}
+
 function createUpgradeOffers(): UpgradeId[][] {
   const deck = shuffle(UPGRADES).map((upgrade) => upgrade.id);
   return [deck.slice(0, 3), deck.slice(3, 6)];
@@ -553,6 +608,12 @@ function getCrossCheckFinding(protocol: CrossCheckProtocol, passenger: Passenger
   return { label: protocol.title, text: passenger.isAnomaly ? message.anomaly : message.safe, tone: passenger.isAnomaly ? "warning" : "safe" };
 }
 
+function getStoryFinding(story: StoryLink, trigger: Passenger, target: Passenger, decision: VerdictDecision): Finding {
+  const template = decision === "allow" ? story.allowText : story.denyText;
+  const text = template.replaceAll("{trigger}", trigger.name).replaceAll("{target}", target.name);
+  return { label: story.title, text, tone: decision === "deny" ? "warning" : "safe" };
+}
+
 function playTone(kind: "tap" | "good" | "bad", enabled: boolean) {
   if (!enabled || typeof window === "undefined") return;
   const AudioCtx = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
@@ -577,6 +638,7 @@ export default function Home() {
   const [runIncidents, setRunIncidents] = useState<RouteIncident[]>(() => ROUTE_INCIDENTS.slice(0, NIGHTS.length));
   const [runDirectives, setRunDirectives] = useState<NightDirective[]>(() => NIGHT_DIRECTIVES.slice(0, NIGHTS.length));
   const [runProtocols, setRunProtocols] = useState<CrossCheckProtocol[]>(() => CROSS_CHECK_PROTOCOLS.slice(0, NIGHTS.length));
+  const [runStoryLinks, setRunStoryLinks] = useState<StoryLink[]>(() => NIGHTS.map((night, index) => ({ ...STORY_PATTERNS[index], triggerId: night.passengers[0].id, targetId: night.passengers[night.passengers.length - 1].id })));
   const [upgradeOffers, setUpgradeOffers] = useState<UpgradeId[][]>(() => [UPGRADES.slice(0, 3).map((item) => item.id), UPGRADES.slice(3, 6).map((item) => item.id)]);
   const [lastRosterIds, setLastRosterIds] = useState<string[][]>([]);
   const [nightIndex, setNightIndex] = useState(0);
@@ -590,6 +652,10 @@ export default function Home() {
   const [streak, setStreak] = useState(0);
   const [runBestStreak, setRunBestStreak] = useState(0);
   const [revealed, setRevealed] = useState<InvestigationKey[]>([]);
+  const [actionDeck, setActionDeck] = useState<InvestigationKey[]>(STARTER_ACTION_DECK);
+  const [hand, setHand] = useState<InvestigationKey[]>(STARTER_ACTION_DECK.slice(0, 4));
+  const [redrawUsed, setRedrawUsed] = useState(false);
+  const [verdictHistory, setVerdictHistory] = useState<Record<string, VerdictDecision>>({});
   const [supportAvailable, setSupportAvailable] = useState(true);
   const [result, setResult] = useState<VerdictResult | null>(null);
   const [upgrades, setUpgrades] = useState<UpgradeId[]>([]);
@@ -604,6 +670,7 @@ export default function Home() {
   const revealedRef = useRef<InvestigationKey[]>([]);
   const focusRef = useRef(3);
   const supportAvailableRef = useRef(true);
+  const redrawUsedRef = useRef(false);
   const verdictLockedRef = useRef(false);
 
   const night = NIGHTS[nightIndex];
@@ -612,7 +679,12 @@ export default function Home() {
   const incident = runIncidents[nightIndex] ?? ROUTE_INCIDENTS[0];
   const directive = runDirectives[nightIndex] ?? NIGHT_DIRECTIVES[0];
   const protocol = runProtocols[nightIndex] ?? CROSS_CHECK_PROTOCOLS[0];
+  const storyLink = runStoryLinks[nightIndex] ?? runStoryLinks[0];
   const passenger = activePassengers[passengerIndex];
+  const storyTrigger = activePassengers.find((item) => item.id === storyLink.triggerId) ?? activePassengers[0];
+  const storyTarget = activePassengers.find((item) => item.id === storyLink.targetId) ?? activePassengers[activePassengers.length - 1];
+  const storyDecision = passenger.id === storyLink.targetId ? verdictHistory[storyLink.triggerId] : undefined;
+  const storyFinding = storyDecision ? getStoryFinding(storyLink, storyTrigger, storyTarget, storyDecision) : null;
   const crossCheckUnlocked = protocol.actions.every((key) => revealed.includes(key));
   const crossCheckFinding = getCrossCheckFinding(protocol, passenger);
   const maxFocus = contract.focus + (upgrades.includes("night-tea") ? 1 : 0) + (incident.focusDelta ?? 0);
@@ -682,6 +754,7 @@ export default function Home() {
     setRunIncidents(createRunIncidents());
     setRunDirectives(createRunDirectives());
     setRunProtocols(createRunProtocols());
+    setRunStoryLinks(createRunStoryLinks(nextRosters));
     setUpgradeOffers(createUpgradeOffers());
     setNightIndex(0);
     setPassengerIndex(0);
@@ -696,6 +769,11 @@ export default function Home() {
     setRunBestStreak(0);
     setRevealed([]);
     revealedRef.current = [];
+    setActionDeck(STARTER_ACTION_DECK);
+    setHand(dealActionHand(STARTER_ACTION_DECK));
+    setRedrawUsed(false);
+    redrawUsedRef.current = false;
+    setVerdictHistory({});
     setSupportAvailable(true);
     supportAvailableRef.current = true;
     verdictLockedRef.current = false;
@@ -712,6 +790,9 @@ export default function Home() {
     focusRef.current = maxFocus;
     setRevealed([]);
     revealedRef.current = [];
+    setHand(dealActionHand(actionDeck));
+    setRedrawUsed(false);
+    redrawUsedRef.current = false;
     setSupportAvailable(true);
     supportAvailableRef.current = true;
     verdictLockedRef.current = false;
@@ -720,7 +801,7 @@ export default function Home() {
   };
 
   const investigate = useCallback((key: InvestigationKey) => {
-    if (phase !== "inspection" || revealedRef.current.includes(key)) return;
+    if (phase !== "inspection" || !hand.includes(key) || revealedRef.current.includes(key)) return;
     const cost = actionCost(key);
     if (focusRef.current < cost) return;
     playTone("tap", soundOn);
@@ -730,7 +811,17 @@ export default function Home() {
     revealedRef.current = next;
     setFocus(focusRef.current);
     setRevealed(next);
-  }, [actionCost, phase, soundOn, upgrades]);
+  }, [actionCost, hand, phase, soundOn, upgrades]);
+
+  const redrawHand = useCallback(() => {
+    if (phase !== "inspection" || redrawUsedRef.current || focusRef.current < 1) return;
+    redrawUsedRef.current = true;
+    focusRef.current -= 1;
+    setFocus(focusRef.current);
+    setRedrawUsed(true);
+    setHand(dealActionHand(actionDeck, revealedRef.current));
+    playTone("tap", soundOn);
+  }, [actionDeck, phase, soundOn]);
 
   const callSupport = useCallback(() => {
     if (phase !== "inspection" || !supportAvailableRef.current) return;
@@ -794,10 +885,13 @@ export default function Home() {
         ? `${passenger.violation} 你放行了它。`
         : `${passenger.violation} 你拒绝了一位符合规定的乘客。`;
 
+    const storyAdvanced = passenger.id === storyLink.triggerId;
+    if (storyAdvanced) setVerdictHistory((history) => ({ ...history, [passenger.id]: decision }));
+
     setArchiveIds((items) => items.includes(passenger.id) ? items : [...items, passenger.id]);
-    setResult({ correct, decision, passenger, title, explanation, reward, streak: nextStreak, directiveMet, directiveReward, endCause });
+    setResult({ correct, decision, passenger, title, explanation, reward, streak: nextStreak, directiveMet, directiveReward, storyAdvanced, endCause });
     setPhase("result");
-  }, [contamination, directive, incident, passenger, phase, protocol.actions, soundOn, streak, trust, upgrades, whistleUsed]);
+  }, [contamination, directive, incident, passenger, phase, protocol.actions, soundOn, storyLink.triggerId, streak, trust, upgrades, whistleUsed]);
 
   const continueAfterResult = () => {
     playTone("tap", soundOn);
@@ -817,6 +911,9 @@ export default function Home() {
     focusRef.current = maxFocus;
     setRevealed([]);
     revealedRef.current = [];
+    setHand(dealActionHand(actionDeck));
+    setRedrawUsed(false);
+    redrawUsedRef.current = false;
     setResult(null);
     setPhase("inspection");
   };
@@ -824,6 +921,8 @@ export default function Home() {
   const chooseUpgrade = (upgrade: Upgrade) => {
     playTone("good", soundOn);
     setUpgrades((items) => [...items, upgrade.id]);
+    const nextDeck = [...actionDeck, upgrade.deckCard];
+    setActionDeck(nextDeck);
     if (upgrade.id === "red-thread") setTrust((value) => value + 1);
     const nextNight = nightIndex + 1;
     const nextIncident = runIncidents[nextNight];
@@ -834,6 +933,9 @@ export default function Home() {
     focusRef.current = nextFocus;
     setRevealed([]);
     revealedRef.current = [];
+    setHand(dealActionHand(nextDeck));
+    setRedrawUsed(false);
+    redrawUsedRef.current = false;
     verdictLockedRef.current = false;
     setResult(null);
     setPhase("briefing");
@@ -842,15 +944,16 @@ export default function Home() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (phase !== "inspection") return;
-      const keyMap: Record<string, InvestigationKey> = { "1": "ticket", "2": "mirror", "3": "question", "4": "pulse", "5": "bag" };
-      if (keyMap[event.key]) investigate(keyMap[event.key]);
+      const handIndex = Number(event.key) - 1;
+      if (handIndex >= 0 && handIndex < hand.length) investigate(hand[handIndex]);
+      if (event.key.toLowerCase() === "r") redrawHand();
       if (event.key.toLowerCase() === "p") callSupport();
       if (event.key.toLowerCase() === "a") makeVerdict("allow");
       if (event.key.toLowerCase() === "d") makeVerdict("deny");
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [callSupport, investigate, makeVerdict, phase]);
+  }, [callSupport, hand, investigate, makeVerdict, phase, redrawHand]);
 
   const ending = useMemo(() => {
     if (trust <= 0) return { mark: "×", kicker: "人事科 · 即时通知", title: "你的检票钳被收走了", body: "误拒不断累积。站长没有责骂你，只让你交回制服。雨棚下仍有人等着一辆不会再由你检票的车。" };
@@ -885,7 +988,7 @@ export default function Home() {
           <div className="title-copy">
             <div className="eyebrow"><span /> 规则推理卡牌游戏</div>
             <h1>零点之后，<br /><em>不要放错任何人。</em></h1>
-            <p className="lead">二十四位可能出现的乘客，每次值班都会更换人物编组、线路异况、夜班密令与核验组合。检查车票、倒影与心跳，在末班车驶入浓雾前，决定谁能上车。</p>
+            <p className="lead">二十四位可能出现的乘客，每次值班都会重组调查牌组、人物编组与连锁事件。抽取行动、调整牌组权重，让前一次处置成为后续乘客的新线索。</p>
             <div className="title-buttons">
               <button className="primary-button" onClick={startRun}><span>开始今晚值班</span><b>→</b></button>
               <button className="secondary-button" onClick={() => setShowArchive(true)}>查看本机档案</button>
@@ -947,7 +1050,7 @@ export default function Home() {
               <h1>{night.label}</h1>
               <p>{night.subtitle}</p>
             </div>
-            <div className="weather-card"><small>{contract.name} · 记录 ×{contract.multiplier.toFixed(1)}</small><strong>{night.weather}</strong><span>本夜随机编组 {activePassengers.length} 人 · 优先避开上一局阵容</span></div>
+            <div className="weather-card"><small>{contract.name} · 记录 ×{contract.multiplier.toFixed(1)}</small><strong>{night.weather}</strong><span>随机编组 {activePassengers.length} 人 · 调查牌组 {actionDeck.length} 张 · 每人抽 4 张</span></div>
           </div>
           <div className="rules-board">
             <div className="board-title"><span>本夜临时乘车规则</span><small>规则每晚更换，请勿沿用昨日经验</small></div>
@@ -968,6 +1071,7 @@ export default function Home() {
           <div className="strategy-board">
             <article className="strategy-card directive-card"><b>{directive.mark}</b><div><small>本夜随机密令 · 正确处置时结算</small><h3>{directive.title}</h3><p>{directive.description}</p></div><strong>完成 +{directive.reward}</strong></article>
             <article className="strategy-card protocol-card"><b>{protocol.mark}</b><div><small>本夜交叉核验</small><h3>{protocol.title}</h3><p>{protocol.description}</p></div><strong>自动生成综合结论</strong></article>
+            <article className="strategy-card story-card"><b>{storyLink.mark}</b><div><small>本夜人物连锁 · {storyTrigger.name} → {storyTarget.name}</small><h3>{storyLink.title}</h3><p>{storyLink.briefing}</p></div><strong>处置将改变线索</strong></article>
           </div>
           {upgrades.length > 0 && (
             <div className="equipped-row"><span>本局已装备</span>{upgrades.map((id) => { const item = UPGRADES.find((upgrade) => upgrade.id === id)!; return <span className="mini-upgrade" key={id}>{item.mark} {item.name}</span>; })}</div>
@@ -997,6 +1101,7 @@ export default function Home() {
               <div className="compact-incident"><b>{incident.mark}</b><p><strong>{incident.title}</strong><span>{incident.effect}</span></p></div>
               <div className="compact-strategy"><b>{directive.mark}</b><p><strong>密令 · {directive.title}</strong><span>{directive.description}（+{directive.reward}）</span></p></div>
               <div className="compact-strategy"><b>{protocol.mark}</b><p><strong>核验 · {protocol.title}</strong><span>组合两项记录可得综合结论</span></p></div>
+              <div className="compact-strategy compact-story"><b>{storyLink.mark}</b><p><strong>连锁 · {storyLink.title}</strong><span>{storyTrigger.name}的处置会影响{storyTarget.name}</span></p></div>
               <div className="decision-tip"><span>判定原则</span><p>违反任意一条规则即可拒载；可疑不等于违规。</p></div>
             </aside>
 
@@ -1020,9 +1125,10 @@ export default function Home() {
               <div className="findings-area">
                 <div className="findings-title"><span>调查记录</span><small>{revealed.length === 0 ? "尚未使用行动牌" : `已获得 ${revealed.length} 条信息`}</small></div>
                 <div className="finding-list">
-                  {revealed.length === 0 && <div className="empty-finding"><span>＋</span> 从下方选择行动牌以核验乘客</div>}
+                  {revealed.length === 0 && !storyFinding && <div className="empty-finding"><span>＋</span> 从下方选择行动牌以核验乘客</div>}
                   {revealed.map((key) => { const finding = passenger.findings[key]; return <div className={`finding ${finding.tone}`} key={key}><b>{ACTIONS[key].mark}</b><p><strong>{finding.label}</strong><span>{finding.text}</span></p></div>; })}
                   {crossCheckUnlocked && <div className={`finding cross-check ${crossCheckFinding.tone}`} aria-live="polite"><b>{protocol.mark}</b><p><strong>交叉核验 · {crossCheckFinding.label}</strong><span>{crossCheckFinding.text}</span></p></div>}
+                  {storyFinding && <div className={`finding story-echo ${storyFinding.tone}`} aria-live="polite"><b>{storyLink.mark}</b><p><strong>人物连锁 · {storyFinding.label}</strong><span>{storyFinding.text}</span></p></div>}
                 </div>
               </div>
               <div className="ticket-barcode" aria-hidden="true">|||| ||| | |||| | | ||| ||</div>
@@ -1040,14 +1146,17 @@ export default function Home() {
           </div>
 
           <div className="action-dock">
-            <div className="focus-counter"><span>本次专注</span><b>{focus}<small> / {maxFocus}</small></b><p>线路异况已计入行动费用</p></div>
+            <div className="focus-counter"><span>本次专注</span><b>{focus}<small> / {maxFocus}</small></b><p>牌组 {actionDeck.length} 张 · 手牌 4 张</p></div>
             <div className="action-hand">
-              {(Object.keys(ACTIONS) as InvestigationKey[]).map((key, index) => {
+              {hand.map((key, index) => {
                 const action = ACTIONS[key]; const cost = actionCost(key); const used = revealed.includes(key); const unavailable = focus < cost || phase === "result";
                 return <button key={key} className={`action-card ${used ? "used" : ""}`} onClick={() => investigate(key)} disabled={used || unavailable}>
                   <span className="key-hint">{index + 1}</span><b className="action-mark">{action.mark}</b><strong>{action.name}</strong><small>{action.hint}</small><i>{used ? "已使用" : `${cost} 专注`}</i>
                 </button>;
               })}
+              <button className={`action-card redraw-card ${redrawUsed ? "used" : ""}`} onClick={redrawHand} disabled={redrawUsed || focus < 1 || phase === "result"}>
+                <span className="key-hint">R</span><b className="action-mark">↻</b><strong>重整手牌</strong><small>优先抽取尚未调查的行动</small><i>{redrawUsed ? "本位已使用" : "1 专注"}</i>
+              </button>
               <button className={`action-card support-card ${supportAvailable ? "" : "used"}`} onClick={callSupport} disabled={!supportAvailable || revealed.length === Object.keys(ACTIONS).length || phase === "result"}>
                 <span className="key-hint">P</span><b className="action-mark">援</b><strong>乘警协查</strong><small>免费补齐一项核验记录</small><i>{supportAvailable ? "每夜 1 次" : "本夜已使用"}</i>
               </button>
@@ -1064,6 +1173,7 @@ export default function Home() {
                 <blockquote>{result.passenger.farewell}</blockquote>
                 <div className="result-impact">
                   {result.correct ? <><span className="positive">连判 {result.streak} · 夜班津贴 +{result.reward}</span><span className={result.directiveMet ? "directive-hit" : "neutral"}>{result.directiveMet ? `密令完成 · 额外 +${result.directiveReward}` : `密令未完成 · ${directive.title}`}</span></> : result.passenger.isAnomaly ? <span className="negative">连判中断 · 车厢污染上升</span> : <span className="negative">连判中断 · 公众信誉下降</span>}
+                  {result.storyAdvanced && <span className="story-hit">连锁已记录 · {storyLink.title}</span>}
                 </div>
                 <button className="primary-button centered" onClick={continueAfterResult}><span>{result.endCause ? "查看夜班结局" : passengerIndex === activePassengers.length - 1 ? "结束本夜检票" : "呼叫下一位乘客"}</span><b>→</b></button>
               </div>
@@ -1078,7 +1188,7 @@ export default function Home() {
           <div className="upgrade-grid">
             {availableUpgrades.map((upgrade) => (
               <button className="upgrade-card" key={upgrade.id} onClick={() => chooseUpgrade(upgrade)}>
-                <span className="upgrade-kicker">{upgrade.kicker}</span><b className="upgrade-mark">{upgrade.mark}</b><h2>{upgrade.name}</h2><p>{upgrade.description}</p><span className="choose-label">选择此牌 <b>→</b></span>
+                <span className="upgrade-kicker">{upgrade.kicker}</span><b className="upgrade-mark">{upgrade.mark}</b><h2>{upgrade.name}</h2><p>{upgrade.description}</p><span className="deck-addition">加入牌组 · {ACTIONS[upgrade.deckCard].mark} {ACTIONS[upgrade.deckCard].name}</span><span className="choose-label">选择此牌 <b>→</b></span>
               </button>
             ))}
           </div>
@@ -1137,12 +1247,12 @@ export default function Home() {
             <h2>值班手册</h2>
             <div className="guide-steps">
               <div><b>01</b><p><strong>先读本夜规则</strong><span>规则每夜更换，上一夜的禁令可能不再有效。</span></p></div>
-              <div><b>02</b><p><strong>组合行动牌调查</strong><span>完成本夜指定的两项核验会生成综合结论；乘警协查每夜可免费使用一次。</span></p></div>
-              <div><b>03</b><p><strong>作出最终处置</strong><span>放行异常会增加污染；误拒普通乘客会损失信誉。</span></p></div>
+              <div><b>02</b><p><strong>从牌组抽取行动</strong><span>每位乘客抽四张行动牌；可支付 1 专注重整一次，乘警协查每夜免费一次。</span></p></div>
+              <div><b>03</b><p><strong>留意人物连锁</strong><span>本夜首位乘客的处置，会为末位乘客生成一条额外关系线索。</span></p></div>
               <div><b>04</b><p><strong>保住这趟列车</strong><span>信誉归零或污染达到 3 点，夜班将提前结束。</span></p></div>
-              <div><b>05</b><p><strong>挑战随机密令</strong><span>每夜都有额外目标；满足条件并正确处置，可获得密令津贴。</span></p></div>
+              <div><b>05</b><p><strong>构筑调查牌组</strong><span>夜间强化会额外加入一张对应行动，提高之后抽到它的概率。</span></p></div>
             </div>
-            <div className="shortcut-line"><span>键盘快捷键</span><b>1–5 调查</b><b>P 协查</b><b>A 放行</b><b>D 拒载</b></div>
+            <div className="shortcut-line"><span>键盘快捷键</span><b>1–4 调查</b><b>R 重整</b><b>P 协查</b><b>A / D 处置</b></div>
             <button className="primary-button centered" onClick={() => setShowGuide(false)}><span>合上手册</span><b>✓</b></button>
           </div>
         </div>
